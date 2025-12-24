@@ -1,6 +1,6 @@
 # Visual Studio
 .vs/
-[Dd]ebug/
+Debug/
 [Rr]elease/
 x64/
 x86/
