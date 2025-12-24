@@ -1,0 +1,18 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug MFC App",
+            "type": "cppvsdbg",
+            "request": "launch",
+            // 👇 编译后生成的 exe 路径，通常在 x64/Debug 下，请去文件夹里确认一下
+            "program": "${workspaceFolder}/x64/Debug/智能机械臂.exe",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "console": "externalTerminal",
+            "preLaunchTask": "Build MFC Debug"
+        }
+    ]
+}

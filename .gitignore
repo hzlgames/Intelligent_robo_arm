@@ -1,0 +1,37 @@
+# Visual Studio
+.vs/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+*.aps
+*.user
+*.suo
+*.ipch
+*.sdf
+*.opensdf
+*.VC.db
+*.VC.opendb
+
+# Build artifacts
+*.obj
+*.pch
+*.tlog
+*.lastbuildstate
+*.idb
+*.pdb
+*.ilk
+*.exe
+*.recipe
+*.res
+*.log
+
+# MSVC stuff
+ipch/
+$Recycle.Bin/
+
+# Others
+*.tmp
+*.bak
+*.swp
+

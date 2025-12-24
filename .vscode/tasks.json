@@ -1,0 +1,21 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build MFC Debug",
+            "type": "shell",
+            "command": "msbuild",
+            "args": [
+                "智能机械臂.sln", 
+                "/p:Configuration=Debug",
+                "/p:Platform=x64",
+                "/t:Build"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": "$msCompile"
+        }
+    ]
+}
