@@ -1,0 +1,17 @@
+{
+  "name": "smart-robotic-arm-mfc",
+  "version-string": "0.1.0",
+  "description": "MFC智能机械臂控制软件：运动学(Eigen) + 视觉叠加(OpenCV) + 标定优化(Ceres)",
+  "dependencies": [
+    "eigen3",
+    {
+      "name": "opencv4",
+      "features": [ "contrib" ]
+    },
+    "ceres"
+  ]
+}
+
+
+
+

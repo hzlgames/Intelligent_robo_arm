@@ -99,6 +99,61 @@
 
 #define IDC_MOTION_EDIT_LOG          1440
 
+// =========================
+// 主界面：相机预览 + Jog 控制
+// =========================
+
+// Camera preview controls (main dialog)
+#define IDC_MAIN_COMBO_CAMERA        1500
+#define IDC_MAIN_BTN_REFRESH_CAM     1501
+#define IDC_MAIN_BTN_START_CAM       1502
+#define IDC_MAIN_BTN_STOP_CAM        1503
+#define IDC_MAIN_STATIC_CAM_STATUS   1504
+#define IDC_MAIN_STATIC_CAM_INFO     1505
+#define IDC_MAIN_STATIC_VIDEO        1506
+
+// Overlay toggles (main dialog)
+#define IDC_MAIN_CHECK_MIRROR        1510
+#define IDC_MAIN_CHECK_CROSSHAIR     1511
+#define IDC_MAIN_CHECK_GRID          1512
+#define IDC_MAIN_COMBO_ROTATION      1513
+
+// Jog controls (main dialog)
+#define IDC_MAIN_STATIC_JOGPAD       1520
+#define IDC_MAIN_SLIDER_SPEED_MM     1521
+#define IDC_MAIN_SLIDER_SPEED_PITCH  1522
+#define IDC_MAIN_STATIC_POSE         1523
+#define IDC_MAIN_BTN_EMERGENCY_STOP  1524
+
+// Main dialog: Serial quick controls (right side, next to camera preview)
+#define IDC_MAIN_GROUP_SERIAL        1525
+#define IDC_MAIN_COMBO_COMPORT       1526
+#define IDC_MAIN_BTN_REFRESH_COM     1527
+#define IDC_MAIN_CHECK_SIMULATE      1528
+#define IDC_MAIN_BTN_CONNECT         1529
+#define IDC_MAIN_STATIC_SERIAL_STATUS 1530
+
+// Main dialog groups (for resize/layout)
+#define IDC_MAIN_GROUP_JOG           1531
+#define IDC_MAIN_GROUP_STATUS        1532
+
+// Main dialog labels (avoid IDC_STATIC collisions; required for reliable resize layout)
+#define IDC_MAIN_LBL_CAMERA          1533
+#define IDC_MAIN_LBL_ROTATION        1534
+#define IDC_MAIN_LBL_SERIAL_COM      1535
+#define IDC_MAIN_LBL_SPEED_MM        1536
+#define IDC_MAIN_LBL_PITCH_SPEED     1537
+
+// Main dialog: Visual servo controls (vision-follow)
+#define IDC_MAIN_GROUP_VS            1538
+#define IDC_MAIN_CHECK_VS_ENABLE     1539
+#define IDC_MAIN_LBL_VS_MODE         1540
+#define IDC_MAIN_COMBO_VS_MODE       1541
+#define IDC_MAIN_LBL_VS_ADVANCE      1542
+#define IDC_MAIN_SLIDER_VS_ADVANCE   1543
+#define IDC_MAIN_CHECK_VS_OVERRIDE   1544
+#define IDC_MAIN_STATIC_VS_STATUS    1545
+
 // String resources
 #define IDS_DIAG_TITLE               2000
 #define IDS_TAB_SERIAL               2001
@@ -120,7 +175,7 @@
 #ifndef APSTUDIO_READONLY_SYMBOLS
 
 #define _APS_NEXT_RESOURCE_VALUE	129
-#define _APS_NEXT_CONTROL_VALUE		1215
+#define _APS_NEXT_CONTROL_VALUE		1546
 #define _APS_NEXT_SYMED_VALUE		101
 #define _APS_NEXT_COMMAND_VALUE		32771
 #endif

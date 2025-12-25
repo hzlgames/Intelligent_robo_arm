@@ -6,6 +6,10 @@
 
 #include "targetver.h"
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
 #define _ATL_CSTRING_EXPLICIT_CONSTRUCTORS      // 某些 CString 构造函数将是显式的
 
 // 关闭 MFC 的一些常见且经常可放心忽略的隐藏警告消息

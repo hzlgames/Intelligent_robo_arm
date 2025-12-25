@@ -4,7 +4,20 @@
 #include "MFCaptureD3D.h"
 #include "BufferLock.h"
 #include <algorithm>
+#include <cmath>
+#include <cstdio>
 #include <vector>
+
+// OpenCV（用于在 RGB32 buffer 上叠加 HUD；若未安装 OpenCV，则自动退化为无HUD）
+#if defined(__has_include)
+#if __has_include(<opencv2/core.hpp>) && __has_include(<opencv2/imgproc.hpp>)
+#define SMARTARM_HAS_OPENCV 1
+#include <opencv2/core.hpp>
+#include <opencv2/imgproc.hpp>
+#endif
+#endif
+
+#include "KinematicsOverlayService.h"
 
 const DWORD NUM_BACK_BUFFERS = 2;
 
@@ -179,6 +192,7 @@ HRESULT DrawDevice::CreateDevice(HWND hwnd)
     HRESULT hr = S_OK;
     D3DPRESENT_PARAMETERS pp = { 0 };
     D3DDISPLAYMODE mode = { 0 };
+    RECT rcClient = { 0, 0, 0, 0 };
 
     hr = m_pD3D->GetAdapterDisplayMode(
         D3DADAPTER_DEFAULT, 
@@ -202,6 +216,17 @@ HRESULT DrawDevice::CreateDevice(HWND hwnd)
     pp.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;  
     pp.Windowed = TRUE;
     pp.hDeviceWindow = hwnd;
+
+    // Important: In windowed mode, resizing the video window requires Reset with a valid backbuffer size.
+    // Some drivers behave poorly when BackBufferWidth/Height stay at 0 during WM_SIZE (can cause stale/garbage).
+    // Use the current client size as the initial backbuffer size.
+    if (GetClientRect(hwnd, &rcClient))
+    {
+        const UINT w = (UINT)std::max<LONG>(1, rcClient.right - rcClient.left);
+        const UINT h = (UINT)std::max<LONG>(1, rcClient.bottom - rcClient.top);
+        pp.BackBufferWidth = w;
+        pp.BackBufferHeight = h;
+    }
 
     hr = m_pD3D->CreateDevice(
         D3DADAPTER_DEFAULT,
@@ -447,6 +472,23 @@ HRESULT DrawDevice::DrawFrame(IMFMediaBuffer *pBuffer)
         m_height
         );
 
+    // 重要：缓存“最新一帧 RGB32”供视觉线程读取（CPreview::CopyLastRgb）。
+    // 之前的实现只在开启镜像/旋转时更新 m_lastRgb，导致默认 Rot=0 且未镜像时
+    // VisionService 永远拿不到帧（CopyLastRgb 返回 false），从而看不到目标点/误差箭头。
+    // 这里先缓存“变换前”的原始帧；若后续应用了镜像/旋转，会在后面的变换分支里覆盖为“变换后”帧。
+    if (!m_lastRgb.empty())
+    {
+        const UINT w = m_width;
+        const UINT h = m_height;
+        for (UINT y = 0; y < h; y++)
+        {
+            const BYTE* row = (const BYTE*)lr.pBits + static_cast<size_t>(y) * static_cast<size_t>(lr.Pitch);
+            memcpy(m_lastRgb.data() + (static_cast<size_t>(y) * static_cast<size_t>(w) * 4),
+                   row,
+                   static_cast<size_t>(w) * 4);
+        }
+    }
+
     hr = pSurf->UnlockRect();
 
     if (FAILED(hr)) { goto done; }
@@ -654,11 +696,28 @@ HRESULT DrawDevice::ResetDevice()
     {
         D3DPRESENT_PARAMETERS d3dpp = m_d3dpp;
 
+        // Keep backbuffer size in sync with the current video window client area.
+        // This prevents artifacts when the user resizes the main window (child video hwnd changes size).
+        RECT rcClient = {};
+        if (m_hwnd && GetClientRect(m_hwnd, &rcClient))
+        {
+            const UINT w = (UINT)std::max<LONG>(1, rcClient.right - rcClient.left);
+            const UINT h = (UINT)std::max<LONG>(1, rcClient.bottom - rcClient.top);
+            d3dpp.BackBufferWidth = w;
+            d3dpp.BackBufferHeight = h;
+        }
+        d3dpp.hDeviceWindow = m_hwnd;
+
         hr = m_pDevice->Reset(&d3dpp);
 
         if (FAILED(hr))
         {
             DestroyDevice();
+        }
+        else
+        {
+            // Persist the last good present params.
+            m_d3dpp = d3dpp;
         }
     }
 
@@ -675,6 +734,10 @@ HRESULT DrawDevice::ResetDevice()
         if (FAILED(hr)) { goto done; }
 
         UpdateDestinationRect();
+
+        // Clear once after reset to avoid showing garbage before the next sample arrives.
+        m_pDevice->Clear(0, NULL, D3DCLEAR_TARGET, D3DCOLOR_XRGB(0, 0, 0), 1.0f, 0);
+        m_pDevice->Present(NULL, NULL, NULL, NULL);
     }
 
 
@@ -1081,7 +1144,7 @@ void DrawDevice::DrawOverlays(IDirect3DSurface9* pBB)
 {
     if (!m_overlay.showCrosshair && !m_overlay.showReferenceLines)
     {
-        return;
+		// 即使没有十字线/网格，也允许绘制运动 HUD（未来可单独开关）
     }
 
     if (pBB == nullptr)
@@ -1183,6 +1246,181 @@ void DrawDevice::DrawOverlays(IDirect3DSurface9* pBB)
         drawHLine(y1, colGrid, 0, true);
         drawHLine(y2, colGrid, 0, true);
     }
+
+	// =========================================================
+	// Visual Servo：目标点 + 误差箭头（不依赖 OpenCV 的兜底绘制路径）
+	// =========================================================
+	// 只在 OpenCV 不可用时启用，避免与 OpenCV HUD 重复，也满足“OpenCV 生效就不需要自己画”的诉求。
+#if !(defined(SMARTARM_HAS_OPENCV) && SMARTARM_HAS_OPENCV)
+	{
+		const auto snap = KinematicsOverlayService::Instance().GetSnapshot();
+		if (snap.vsEnabled)
+		{
+			// 颜色：正在由视觉驱动则高亮绿色，否则灰色（仅提示已启用但未覆盖手动）
+			const DWORD colVs = snap.vsApplied ? toD3dColor(RGB(0, 255, 0)) : toD3dColor(RGB(200, 200, 200));
+
+			const int cxp = w / 2;
+			const int cyp = h / 2;
+
+			// 目标点 = 画面中心 + 像素误差（与 VisualServoController 约定一致）
+			int tx = cxp + (int)std::lround(snap.vsErrU);
+			int ty = cyp + (int)std::lround(snap.vsErrV);
+
+			// Clamp
+			if (tx < 0) tx = 0;
+			if (ty < 0) ty = 0;
+			if (tx >= w) tx = w - 1;
+			if (ty >= h) ty = h - 1;
+
+			// 画一条中心->目标的直线（Bresenham）
+			auto drawLine = [&](int x0, int y0, int x1, int y1, DWORD c, int thickness)
+			{
+				int dx = std::abs(x1 - x0);
+				int sx = (x0 < x1) ? 1 : -1;
+				int dy = -std::abs(y1 - y0);
+				int sy = (y0 < y1) ? 1 : -1;
+				int err = dx + dy;
+
+				while (true)
+				{
+					for (int oy = -thickness; oy <= thickness; oy++)
+					{
+						for (int ox = -thickness; ox <= thickness; ox++)
+						{
+							setPixel(x0 + ox, y0 + oy, c);
+						}
+					}
+					if (x0 == x1 && y0 == y1) break;
+					const int e2 = 2 * err;
+					if (e2 >= dy) { err += dy; x0 += sx; }
+					if (e2 <= dx) { err += dx; y0 += sy; }
+				}
+			};
+
+			// 画一个空心圆（简单采样）
+			auto drawCircle = [&](int x, int y, int r, DWORD c)
+			{
+				// 采样 0..360 度，每 5 度一个点，足够用于 HUD
+				for (int a = 0; a < 360; a += 5)
+				{
+					const double rad = (double)a * 3.14159265358979323846 / 180.0;
+					const int px = x + (int)std::lround((double)r * std::cos(rad));
+					const int py = y + (int)std::lround((double)r * std::sin(rad));
+					setPixel(px, py, c);
+				}
+			};
+
+			// 画箭头主体
+			drawLine(cxp, cyp, tx, ty, colVs, 1);
+
+			// 画箭头头部（两条短线）
+			{
+				const double vx = (double)(tx - cxp);
+				const double vy = (double)(ty - cyp);
+				const double len = std::sqrt(vx * vx + vy * vy);
+				if (len > 1e-3)
+				{
+					const double ux = vx / len;
+					const double uy = vy / len;
+					// 头部长度与夹角（可调）
+					const double headLen = 16.0;
+					const double ca = std::cos(25.0 * 3.14159265358979323846 / 180.0);
+					const double sa = std::sin(25.0 * 3.14159265358979323846 / 180.0);
+
+					// 左右两翼：对单位向量做旋转
+					const double lx = ux * ca - uy * sa;
+					const double ly = ux * sa + uy * ca;
+					const double rx = ux * ca + uy * sa;
+					const double ry = -ux * sa + uy * ca;
+
+					const int xL = tx - (int)std::lround(lx * headLen);
+					const int yL = ty - (int)std::lround(ly * headLen);
+					const int xR = tx - (int)std::lround(rx * headLen);
+					const int yR = ty - (int)std::lround(ry * headLen);
+
+					drawLine(tx, ty, xL, yL, colVs, 1);
+					drawLine(tx, ty, xR, yR, colVs, 1);
+				}
+			}
+
+			// 画目标点圆圈
+			drawCircle(tx, ty, 6, colVs);
+			drawCircle(tx, ty, 7, colVs);
+		}
+	}
+#endif
+
+#if defined(SMARTARM_HAS_OPENCV) && SMARTARM_HAS_OPENCV
+	// ==========================
+	// HUD 叠加（OpenCV）
+	// ==========================
+	// 注意：OpenCV 的 putText 默认不支持中文字体，这里使用英文/符号，避免乱码。
+	{
+		cv::Mat img(h, w, CV_8UC4, lr.pBits, (size_t)lr.Pitch);
+		const auto snap = KinematicsOverlayService::Instance().GetSnapshot();
+
+		// 左上角 HUD 文本
+		char buf1[256] = {};
+		sprintf_s(buf1, "Jog:%s  IK:%s", snap.jogActive ? "ON" : "OFF", snap.ikOk ? "OK" : "FAIL");
+		cv::putText(img, buf1, cv::Point(12, 24), cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 255, 255, 0), 2, cv::LINE_AA);
+
+		char buf2[256] = {};
+		sprintf_s(buf2, "X=%.0f  Y=%.0f  Z=%.0f  P=%.1f",
+		          snap.target.x_mm, snap.target.y_mm, snap.target.z_mm, snap.target.pitch_deg);
+		cv::putText(img, buf2, cv::Point(12, 48), cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(255, 255, 255, 0), 1, cv::LINE_AA);
+
+		char buf3[256] = {};
+		sprintf_s(buf3, "TX:%u fps  last:%u ms", snap.sendFps, snap.sinceLastSendMs);
+		cv::putText(img, buf3, cv::Point(12, 72), cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(180, 255, 180, 0), 1, cv::LINE_AA);
+
+		// Jog 向量指示（从一个小原点画箭头）
+		const cv::Point o(30, 105);
+		const cv::Point e(o.x + (int)std::lround(snap.joyX * 25.0), o.y - (int)std::lround(snap.joyY * 25.0));
+		cv::circle(img, o, 3, cv::Scalar(200, 200, 200, 0), -1, cv::LINE_AA);
+		cv::arrowedLine(img, o, e, cv::Scalar(0, 180, 255, 0), 2, cv::LINE_AA);
+
+		// Visual Servo：目标点 + 误差箭头（OpenCV 版本）
+		if (snap.vsEnabled)
+		{
+			const int cxp = w / 2;
+			const int cyp = h / 2;
+			const cv::Point c(cxp, cyp);
+			const cv::Point t(cxp + (int)std::lround(snap.vsErrU), cyp + (int)std::lround(snap.vsErrV));
+
+			// Clamp to frame
+			auto clampPt = [&](cv::Point p) -> cv::Point {
+				p.x = std::max(0, std::min(w - 1, p.x));
+				p.y = std::max(0, std::min(h - 1, p.y));
+				return p;
+			};
+			const cv::Point tc = clampPt(t);
+
+			const cv::Scalar col = snap.vsApplied ? cv::Scalar(0, 255, 0, 0) : cv::Scalar(200, 200, 200, 0);
+			cv::circle(img, tc, 5, col, 2, cv::LINE_AA);
+			cv::arrowedLine(img, c, tc, col, 2, cv::LINE_AA, 0, 0.15);
+
+			const char* modeStr = "Center";
+			if (snap.vsMode == 1) modeStr = "FollowRay";
+			else if (snap.vsMode == 2) modeStr = "Look&Move";
+
+			char bufVs[256] = {};
+			sprintf_s(bufVs, "VS:%s %s e(%.0f,%.0f) adv=%.2f",
+			          snap.vsActive ? "ON" : "IDLE",
+			          modeStr,
+			          snap.vsErrU, snap.vsErrV,
+			          snap.vsAdvance);
+			cv::putText(img, bufVs, cv::Point(12, 120), cv::FONT_HERSHEY_SIMPLEX, 0.55,
+			            snap.vsApplied ? cv::Scalar(0, 255, 0, 0) : cv::Scalar(200, 200, 200, 0),
+			            1, cv::LINE_AA);
+		}
+
+		// IK 失败原因（只显示短提示）
+		if (!snap.ikOk)
+		{
+			cv::putText(img, "IK FAIL", cv::Point(12, 96), cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 0, 255, 0), 2, cv::LINE_AA);
+		}
+	}
+#endif
 
     pBB->UnlockRect();
 }

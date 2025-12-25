@@ -1,0 +1,32 @@
+Package: vcpkg-cmake-config
+Version: 2024-05-23
+Architecture: x64-windows
+Multi-Arch: same
+Abi: ec357b4bf7bc8b0c9730bbb96d5fc907f88f774f706978f49d8b478c4944fafe
+Status: install ok installed
+
+Package: vcpkg-cmake
+Version: 2024-04-23
+Architecture: x64-windows
+Multi-Arch: same
+Abi: cc2ca02777280cb243ea501a6d32454c330dc2e7b7daa0bfc3875d7f54e8bf2f
+Status: install ok installed
+
+Package: gflags
+Version: 2.3.0
+Depends: vcpkg-cmake, vcpkg-cmake-config
+Architecture: x64-windows
+Multi-Arch: same
+Abi: 62741700fc29e6cdd07b6136f6a28a487edf79b2e1d825501ca18d8f301f8378
+Description: A C++ library that implements commandline flags processing
+Status: install ok installed
+
+Package: glog
+Version: 0.7.1
+Depends: gflags, vcpkg-cmake, vcpkg-cmake-config
+Architecture: x64-windows
+Multi-Arch: same
+Abi: cab6408275abac90bff821f2bcb2ca006e6e41100c351685508819a1226856a2
+Description: C++ implementation of the Google logging module
+Status: install ok installed
+

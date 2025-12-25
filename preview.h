@@ -4,6 +4,7 @@
 
 #include "MFCaptureD3D.h"
 #include "device.h"
+#include <vector>
 
 const UINT WM_APP_PREVIEW_ERROR = WM_APP + 1;    // wparam = HRESULT
 
@@ -51,6 +52,17 @@ public:
     UINT          GetFrameCount() const { return m_frameCount; }
     void          ResetFrameCount() { m_frameCount = 0; }
 
+    // Copies the latest RGB32 frame (post mirror/rotation transforms) into outRgb.
+    // Thread-safe: locks the same critical section used by OnReadSample.
+    // Returns false if no frame has been captured yet.
+    bool          CopyLastRgb(std::vector<BYTE>& outRgb, UINT& outW, UINT& outH) const;
+
+    // Last frame timestamps (for vision/debug). Both are updated when a sample is drawn.
+    // - MfTimestamp: Media Foundation timestamp passed into OnReadSample (100-ns units, may be 0 depending on source)
+    // - TickMs: GetTickCount64() when the frame was received (monotonic-ish)
+    ULONGLONG     GetLastFrameTickMs() const;
+    LONGLONG      GetLastFrameMfTimestamp() const;
+
     void          SetOverlaySettings(const VideoOverlaySettings& s) { m_draw.SetOverlaySettings(s); }
     VideoOverlaySettings GetOverlaySettings() const { return m_draw.GetOverlaySettings(); }
 
@@ -80,5 +92,9 @@ protected:
     UINT32                  m_cchSymbolicLink;
 
     UINT                    m_frameCount;       // Frame counter for diagnostics
+
+    // Last frame timestamps (guarded by m_critsec)
+    ULONGLONG                m_lastFrameTickMs;
+    LONGLONG                 m_lastFrameMfTimestamp;
 };
 

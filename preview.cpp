@@ -60,7 +60,9 @@ CPreview::CPreview(HWND hVideo, HWND hEvent) :
     m_nRefCount(1),
     m_pwszSymbolicLink(NULL),
     m_cchSymbolicLink(0),
-    m_frameCount(0)
+    m_frameCount(0),
+    m_lastFrameTickMs(0),
+    m_lastFrameMfTimestamp(0)
 {
     InitializeCriticalSection(&m_critsec);
 }
@@ -172,7 +174,7 @@ HRESULT CPreview::OnReadSample(
     HRESULT hrStatus,
     DWORD /* dwStreamIndex */,
     DWORD /* dwStreamFlags */,
-    LONGLONG /* llTimestamp */,
+    LONGLONG llTimestamp,
     IMFSample *pSample      // Can be NULL
     )
 {
@@ -190,6 +192,11 @@ HRESULT CPreview::OnReadSample(
     {
         if (pSample)
         {
+            // Record timestamps for the most recent frame.
+            // Keep both MF timestamp and a local tick for robust age checks.
+            m_lastFrameMfTimestamp = llTimestamp;
+            m_lastFrameTickMs = ::GetTickCount64();
+
             // Get the video frame buffer from the sample.
 
             hr = pSample->GetBufferByIndex(0, &pBuffer);
@@ -225,6 +232,30 @@ HRESULT CPreview::OnReadSample(
 
     LeaveCriticalSection(&m_critsec);
     return hr;
+}
+
+bool CPreview::CopyLastRgb(std::vector<BYTE>& outRgb, UINT& outW, UINT& outH) const
+{
+    EnterCriticalSection(const_cast<LPCRITICAL_SECTION>(&m_critsec));
+    const bool ok = m_draw.CopyLastRgb(outRgb, outW, outH);
+    LeaveCriticalSection(const_cast<LPCRITICAL_SECTION>(&m_critsec));
+    return ok;
+}
+
+ULONGLONG CPreview::GetLastFrameTickMs() const
+{
+    EnterCriticalSection(const_cast<LPCRITICAL_SECTION>(&m_critsec));
+    const ULONGLONG v = m_lastFrameTickMs;
+    LeaveCriticalSection(const_cast<LPCRITICAL_SECTION>(&m_critsec));
+    return v;
+}
+
+LONGLONG CPreview::GetLastFrameMfTimestamp() const
+{
+    EnterCriticalSection(const_cast<LPCRITICAL_SECTION>(&m_critsec));
+    const LONGLONG v = m_lastFrameMfTimestamp;
+    LeaveCriticalSection(const_cast<LPCRITICAL_SECTION>(&m_critsec));
+    return v;
 }
 
 

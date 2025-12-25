@@ -72,6 +72,21 @@
     <ClInclude Include="SettingsIo.h">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="VisualServoController.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="VisualServoTypes.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="VisionService.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="VisionDetector.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="VisionGeometry.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="智能机械臂.cpp">
@@ -111,6 +126,18 @@
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="SettingsIo.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="VisualServoController.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="VisionService.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="VisionDetector.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="VisionGeometry.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
   </ItemGroup>

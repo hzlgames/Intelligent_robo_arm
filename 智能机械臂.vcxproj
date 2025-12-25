@@ -24,6 +24,15 @@
     <Keyword>MFCProj</Keyword>
     <RootNamespace>智能机械臂</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <!-- vcpkg manifest 支持：用于自动安装/引用第三方库（Eigen/OpenCV/Ceres） -->
+    <VcpkgEnableManifest>true</VcpkgEnableManifest>
+    <VcpkgManifestRoot>$(ProjectDir)</VcpkgManifestRoot>
+    <!--
+      重要：把 vcpkg 的 InstalledDir 放到“纯英文路径”，避免 vcpkg 内部工具（例如 pkgconf）
+      在处理包含中文的工程路径时崩溃（现象：eigen3 BUILD_FAILED，cmake.exe 退出码 0xC0000409）。
+      你可以按需改到其它纯英文目录（例如 C:\vcpkg_installed\）。
+    -->
+    <VcpkgInstalledDir>$(USERPROFILE)\vcpkg_installed\</VcpkgInstalledDir>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
@@ -93,6 +102,9 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_WINDOWS;_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+      <!-- OpenCV4 头文件在 include/opencv4/ 子目录，vcpkg 不会自动添加这层路径 -->
+      <AdditionalIncludeDirectories>$(VcpkgInstalledDir)x64-windows\include\opencv4;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -115,6 +127,8 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32;_WINDOWS;_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalIncludeDirectories>$(VcpkgInstalledDir)x86-windows\include\opencv4;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -139,6 +153,8 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32;_WINDOWS;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalIncludeDirectories>$(VcpkgInstalledDir)x86-windows\include\opencv4;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -165,6 +181,8 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_WINDOWS;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalIncludeDirectories>$(VcpkgInstalledDir)x64-windows\include\opencv4;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -187,12 +205,17 @@
     <ClInclude Include="framework.h" />
     <ClInclude Include="ArmCommsService.h" />
     <ClInclude Include="ArmProtocol.h" />
+    <ClInclude Include="ArmKinematics.h" />
     <ClInclude Include="BufferLock.h" />
     <ClInclude Include="CameraDiagPage.h" />
     <ClInclude Include="ControlDiagPage.h" />
     <ClInclude Include="device.h" />
     <ClInclude Include="DiagnosticsSheet.h" />
     <ClInclude Include="FakeSerialPort.h" />
+    <ClInclude Include="JogController.h" />
+    <ClInclude Include="JogPadCtrl.h" />
+    <ClInclude Include="KinematicsOverlayService.h" />
+    <ClInclude Include="KinematicsConfig.h" />
     <ClInclude Include="MFCaptureD3D.h" />
     <ClInclude Include="MotionConfig.h" />
     <ClInclude Include="MotionController.h" />
@@ -204,17 +227,27 @@
     <ClInclude Include="SerialPortWin32.h" />
     <ClInclude Include="SettingsIo.h" />
     <ClInclude Include="targetver.h" />
+    <ClInclude Include="VisualServoController.h" />
+    <ClInclude Include="VisualServoTypes.h" />
+    <ClInclude Include="VisionDetector.h" />
+    <ClInclude Include="VisionGeometry.h" />
+    <ClInclude Include="VisionService.h" />
     <ClInclude Include="智能机械臂.h" />
     <ClInclude Include="智能机械臂Dlg.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="ArmCommsService.cpp" />
+    <ClCompile Include="ArmKinematics.cpp" />
     <ClCompile Include="ArmProtocol.cpp" />
     <ClCompile Include="CameraDiagPage.cpp" />
     <ClCompile Include="ControlDiagPage.cpp" />
     <ClCompile Include="device.cpp" />
     <ClCompile Include="DiagnosticsSheet.cpp" />
     <ClCompile Include="FakeSerialPort.cpp" />
+    <ClCompile Include="JogController.cpp" />
+    <ClCompile Include="JogPadCtrl.cpp" />
+    <ClCompile Include="KinematicsOverlayService.cpp" />
+    <ClCompile Include="KinematicsConfig.cpp" />
     <ClCompile Include="MotionConfig.cpp" />
     <ClCompile Include="MotionController.cpp" />
     <ClCompile Include="MotionDiagPage.cpp" />
@@ -222,6 +255,10 @@
     <ClCompile Include="SerialDiagPage.cpp" />
     <ClCompile Include="SerialPortWin32.cpp" />
     <ClCompile Include="SettingsIo.cpp" />
+    <ClCompile Include="VisualServoController.cpp" />
+    <ClCompile Include="VisionDetector.cpp" />
+    <ClCompile Include="VisionGeometry.cpp" />
+    <ClCompile Include="VisionService.cpp" />
     <ClCompile Include="pch.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Create</PrecompiledHeader>
