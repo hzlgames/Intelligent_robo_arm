@@ -208,6 +208,8 @@ void VisionService::ThreadMain()
 		VisionOverlayService::Gesture handGesture = VisionOverlayService::Gesture::Unknown;
 		double handPinchStrength = 0.0;
 		std::array<VisionOverlayService::Point2, 21> handPts{};
+		bool hasArucoCorners = false;
+		std::array<VisionOverlayService::Point2, 4> arucoCorners{};
 
 		// =========
 		// 1) ArUco
@@ -260,6 +262,12 @@ void VisionService::ThreadMain()
 					v = (double)c.y;
 					conf = Clamp(bestPerim / (double)std::max(1u, (w + h)), 0.0, 1.0);
 					hasTarget = true;
+					hasArucoCorners = true;
+					for (int k = 0; k < 4; k++)
+					{
+						arucoCorners[k].x = (double)corners[bestIdx][k].x;
+						arucoCorners[k].y = (double)corners[bestIdx][k].y;
+					}
 
 #if defined(SMARTARM_HAS_OPENCV_CALIB3D) && SMARTARM_HAS_OPENCV_CALIB3D
 					// 估计 marker 位姿，从而得到一个“有尺度”的 depthMm（单位：mm）
@@ -431,8 +439,12 @@ void VisionService::ThreadMain()
 				hasTarget = false;
 			}
 
-			::Sleep(30);
-			continue;
+			// 强制 HandSticker：没识别到就不输出；识别到则正常进入发布阶段（用于 HUD 显示与 VS）
+			if (!hasTarget)
+			{
+				::Sleep(30);
+				continue;
+			}
 		}
 
 		// ColorTrack：红色 blob（Auto/强制模式）
@@ -781,6 +793,10 @@ void VisionService::ThreadMain()
 			s.v = r.v;
 			s.hasConfidence = r.hasConfidence;
 			s.confidence = r.confidence;
+			s.hasRay = hasRay;
+			s.rayX = rayX;
+			s.rayY = rayY;
+			s.rayZ = rayZ;
 			s.hasDepthMm = r.hasDepthMm;
 			s.depthMm = r.depthMm;
 			s.depthNearMm = p.depthNearMm;
@@ -791,6 +807,11 @@ void VisionService::ThreadMain()
 			s.box.w = r.boxW;
 			s.box.h = r.boxH;
 			s.classId = r.classId;
+			s.hasArucoCorners = hasArucoCorners;
+			if (hasArucoCorners)
+			{
+				s.arucoCorners = arucoCorners;
+			}
 			s.hasHandLandmarks = hasHandLm;
 			if (hasHandLm)
 			{

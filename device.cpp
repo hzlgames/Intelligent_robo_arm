@@ -1424,6 +1424,75 @@ void DrawDevice::DrawOverlays(IDirect3DSurface9* pBB)
 			const ULONGLONG now = ::GetTickCount64();
 			if (v.tickMs != 0 && now >= v.tickMs && (now - v.tickMs) <= 800)
 			{
+				// ---------
+				// Generic target overlay (all modes)
+				// ---------
+				const char* modeStr = "Auto";
+				switch (v.mode)
+				{
+				case 0: modeStr = "Auto"; break;
+				case 1: modeStr = "Brightest"; break;
+				case 2: modeStr = "Aruco"; break;
+				case 3: modeStr = "Color"; break;
+				case 4: modeStr = "Detector"; break;
+				case 5: modeStr = "Sticker"; break;
+				case 6: modeStr = "HandLM"; break;
+				default: modeStr = "Auto"; break;
+				}
+
+				cv::Scalar colTarget(255, 255, 255, 0);
+				if (v.mode == 1) colTarget = cv::Scalar(0, 255, 255, 0);      // Brightest: yellow
+				else if (v.mode == 2) colTarget = cv::Scalar(255, 255, 0, 0); // Aruco: cyan-ish
+				else if (v.mode == 3) colTarget = cv::Scalar(0, 0, 255, 0);   // Color: red
+				else if (v.mode == 4) colTarget = cv::Scalar(0, 255, 255, 0); // Detector: yellow
+				else if (v.mode == 5) colTarget = cv::Scalar(255, 0, 255, 0); // Sticker: magenta
+				else if (v.mode == 6) colTarget = cv::Scalar(0, 255, 0, 0);   // HandLM: green
+
+				auto clampPt = [&](double x, double y) -> cv::Point
+				{
+					const int ix = std::max(0, std::min(w - 1, (int)std::lround(x)));
+					const int iy = std::max(0, std::min(h - 1, (int)std::lround(y)));
+					return cv::Point(ix, iy);
+				};
+
+				if (v.hasTargetPx)
+				{
+					const auto tp = clampPt(v.u, v.v);
+					// cross + ring
+					cv::drawMarker(img, tp, colTarget, cv::MARKER_CROSS, 16, 2, cv::LINE_AA);
+					cv::circle(img, tp, 8, colTarget, 2, cv::LINE_AA);
+
+					char tb[128] = {};
+					if (v.hasConfidence)
+						sprintf_s(tb, "%s u=%.0f v=%.0f c=%.2f", modeStr, v.u, v.v, v.confidence);
+					else
+						sprintf_s(tb, "%s u=%.0f v=%.0f", modeStr, v.u, v.v);
+					cv::putText(img, tb, cv::Point(std::max(0, tp.x + 10), std::max(0, tp.y + 18)),
+					            cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 0, 0, 0), 2, cv::LINE_AA);
+					cv::putText(img, tb, cv::Point(std::max(0, tp.x + 10), std::max(0, tp.y + 18)),
+					            cv::FONT_HERSHEY_SIMPLEX, 0.5, colTarget, 1, cv::LINE_AA);
+
+					// ray arrow (if available): from target along (rayX,rayY) direction
+					if (v.hasRay)
+					{
+						const double s = 120.0;
+						const auto endp = clampPt((double)tp.x + v.rayX * s, (double)tp.y + v.rayY * s);
+						cv::arrowedLine(img, tp, endp, colTarget, 2, cv::LINE_AA, 0, 0.15);
+					}
+				}
+
+				// ArUco corners quad
+				if (v.hasArucoCorners)
+				{
+					const cv::Scalar colAruco(255, 255, 0, 0);
+					for (int i = 0; i < 4; i++)
+					{
+						const auto a = clampPt(v.arucoCorners[i].x, v.arucoCorners[i].y);
+						const auto b = clampPt(v.arucoCorners[(i + 1) & 3].x, v.arucoCorners[(i + 1) & 3].y);
+						cv::line(img, a, b, colAruco, 2, cv::LINE_AA);
+					}
+				}
+
 				// Detector bbox
 				if (v.hasBox && v.box.w > 0 && v.box.h > 0)
 				{
@@ -1472,13 +1541,6 @@ void DrawDevice::DrawOverlays(IDirect3DSurface9* pBB)
 				// Hand landmarks skeleton + gesture
 				if (v.hasHandLandmarks)
 				{
-					auto clampPt = [&](double x, double y) -> cv::Point
-					{
-						const int ix = std::max(0, std::min(w - 1, (int)std::lround(x)));
-						const int iy = std::max(0, std::min(h - 1, (int)std::lround(y)));
-						return cv::Point(ix, iy);
-					};
-
 					auto drawEdge = [&](int a, int b, const cv::Scalar& col)
 					{
 						const auto pa = clampPt(v.handPts[a].x, v.handPts[a].y);

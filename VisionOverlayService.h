@@ -48,6 +48,12 @@ public:
 		bool hasConfidence = false;
 		double confidence = 0.0;
 
+		// 通用指向（屏幕方向近似向量，来自 HandSticker/HandLandmarks 等）
+		bool hasRay = false;
+		double rayX = 0.0;
+		double rayY = 0.0;
+		double rayZ = 1.0;
+
 		// 深度（mm）
 		bool hasDepthMm = false;
 		double depthMm = 0.0;
