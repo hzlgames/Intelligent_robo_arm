@@ -48,6 +48,16 @@ public:
 		bool hasConfidence = false;
 		double confidence = 0.0;
 
+		// 通用“选中框”（用于把当前算法选中的目标框选出来；Detector/色块/ArUco/手等）
+		bool hasTrackBox = false;
+		RectI trackBox{};
+
+		// ===== Point->Lock->Confirm 选物状态机（颜色反馈）=====
+		// selectState: 0=None, 1=Searching, 2=Locked, 3=Confirmed, 4=Cancelled(短暂)
+		int selectState = 0;
+		bool hasSelectBox = false;
+		RectI selectBox{};
+
 		// 通用指向（屏幕方向近似向量，来自 HandSticker/HandLandmarks 等）
 		bool hasRay = false;
 		double rayX = 0.0;

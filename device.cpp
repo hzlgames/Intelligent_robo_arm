@@ -1493,6 +1493,30 @@ void DrawDevice::DrawOverlays(IDirect3DSurface9* pBB)
 					}
 				}
 
+				// Generic track box (non-detector modes)
+				if (v.hasTrackBox && !v.hasBox && v.trackBox.w > 0 && v.trackBox.h > 0)
+				{
+					const cv::Rect r(v.trackBox.x, v.trackBox.y, v.trackBox.w, v.trackBox.h);
+					cv::rectangle(img, r, colTarget, 2, cv::LINE_AA);
+				}
+
+				// PointPick selection box (color feedback)
+				if (v.hasSelectBox && v.selectBox.w > 0 && v.selectBox.h > 0)
+				{
+					cv::Scalar colSel(0, 255, 255, 0); // Searching: yellow
+					const char* st = "SEARCH";
+					if (v.selectState == 2) { colSel = cv::Scalar(0, 255, 0, 0); st = "LOCK"; }
+					else if (v.selectState == 3) { colSel = cv::Scalar(0, 0, 255, 0); st = "CONFIRM"; }
+					else if (v.selectState == 4) { colSel = cv::Scalar(255, 0, 0, 0); st = "CANCEL"; }
+
+					const cv::Rect r(v.selectBox.x, v.selectBox.y, v.selectBox.w, v.selectBox.h);
+					cv::rectangle(img, r, colSel, 3, cv::LINE_AA);
+					cv::putText(img, st, cv::Point(std::max(0, r.x), std::max(12, r.y - 6)),
+					            cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 0, 0, 0), 2, cv::LINE_AA);
+					cv::putText(img, st, cv::Point(std::max(0, r.x), std::max(12, r.y - 6)),
+					            cv::FONT_HERSHEY_SIMPLEX, 0.6, colSel, 1, cv::LINE_AA);
+				}
+
 				// Detector bbox
 				if (v.hasBox && v.box.w > 0 && v.box.h > 0)
 				{

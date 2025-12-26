@@ -50,6 +50,15 @@ public:
 	// 若未加载模型，返回 false。
 	bool DetectBest(const void* bgrData, int width, int height, int strideBytes, Detection& best);
 
+	// 对一帧 BGR 图像做检测，返回“最优目标”但排除与 excludeRect 重叠过大的框（用于排除手/遮挡区域）。
+	// overlap = intersectArea / boxArea；若 overlap > maxOverlap 则该框被忽略。
+	// 若 excludeRect==nullptr，则等价于 DetectBest。
+	bool DetectBestExcludingRect(const void* bgrData, int width, int height, int strideBytes,
+	                             const RECT* excludeRect, float maxOverlap, Detection& best);
+
+	// 返回所有检测框（用于“指向附近选物”）。若未加载模型，返回 false。
+	bool DetectAll(const void* bgrData, int width, int height, int strideBytes, std::vector<Detection>& out);
+
 private:
 	static bool ReadFileToBufferW(const std::wstring& path, std::vector<BYTE>& out);
 	static std::string WStringToUtf8(const std::wstring& ws);

@@ -156,6 +156,20 @@ SettingsIo::Result SettingsIo::ExportToIni(const std::wstring& iniPath)
 	ExportProfileInt(iniPath, L"Vision", L"ProcessPeriodMs", 33);
 	ExportProfileInt(iniPath, L"Vision", L"SampleStride", 8);
 	ExportProfileInt(iniPath, L"Vision", L"EmaAlpha_milli", 350); // 0..1000
+	// ExcludeHand: 1=目标选择时排除手部（用于“指哪抓哪”）
+	ExportProfileInt(iniPath, L"Vision", L"ExcludeHand", 1);
+	ExportProfileInt(iniPath, L"Vision", L"ExcludeHandInflatePx", 20);
+	ExportProfileInt(iniPath, L"Vision", L"ExcludeHandOverlap_milli", 300); // 0..1000
+	// PointPick (gesture-based pick flow)
+	ExportProfileInt(iniPath, L"Vision\\PointPick", L"Enabled", 1);
+	ExportProfileInt(iniPath, L"Vision\\PointPick", L"MaxRayLenPx", 320);
+	ExportProfileInt(iniPath, L"Vision\\PointPick", L"MaxRayPerpPx", 90);
+	ExportProfileInt(iniPath, L"Vision\\PointPick", L"MaxRadiusPx", 140);
+	ExportProfileInt(iniPath, L"Vision\\PointPick", L"HoldLockMs", 3000);
+	ExportProfileInt(iniPath, L"Vision\\PointPick", L"HoldConfirmMs", 3000);
+	ExportProfileInt(iniPath, L"Vision\\PointPick", L"HoldCancelMs", 3000);
+	ExportProfileInt(iniPath, L"Vision\\PointPick", L"CancelFlashMs", 800);
+	ExportProfileInt(iniPath, L"Vision\\PointPick", L"IouSame_milli", 500); // 0..1000
 
 	// ArUco
 	ExportProfileInt(iniPath, L"Vision\\Aruco", L"MarkerLengthMm", 40);
@@ -165,9 +179,11 @@ SettingsIo::Result SettingsIo::ExportToIni(const std::wstring& iniPath)
 	ExportProfileInt(iniPath, L"Vision\\Depth", L"FarMm", 220);
 
 	// Detector (ONNX)
-	ExportProfileString(iniPath, L"Vision\\Detector", L"OnnxPath", L"");
-	ExportProfileInt(iniPath, L"Vision\\Detector", L"InputW", 320);
-	ExportProfileInt(iniPath, L"Vision\\Detector", L"InputH", 320);
+	// 说明：Detector 若不配置 OnnxPath 会无法启用；这里给出“推荐默认”路径，用户只需把模型文件放到该位置即可。
+	// 推荐：yolov5n.onnx（输入 640x640）
+	ExportProfileString(iniPath, L"Vision\\Detector", L"OnnxPath", L"models\\detector\\yolov5n.onnx");
+	ExportProfileInt(iniPath, L"Vision\\Detector", L"InputW", 640);
+	ExportProfileInt(iniPath, L"Vision\\Detector", L"InputH", 640);
 	ExportProfileInt(iniPath, L"Vision\\Detector", L"Conf_milli", 500); // 0..1000
 	ExportProfileInt(iniPath, L"Vision\\Detector", L"Nms_milli", 400);  // 0..1000
 
@@ -255,6 +271,18 @@ SettingsIo::Result SettingsIo::ImportFromIni(const std::wstring& iniPath)
 	ImportProfileInt(iniPath, L"Vision", L"ProcessPeriodMs", 33);
 	ImportProfileInt(iniPath, L"Vision", L"SampleStride", 8);
 	ImportProfileInt(iniPath, L"Vision", L"EmaAlpha_milli", 350);
+	ImportProfileInt(iniPath, L"Vision", L"ExcludeHand", 1);
+	ImportProfileInt(iniPath, L"Vision", L"ExcludeHandInflatePx", 20);
+	ImportProfileInt(iniPath, L"Vision", L"ExcludeHandOverlap_milli", 300);
+	ImportProfileInt(iniPath, L"Vision\\PointPick", L"Enabled", 1);
+	ImportProfileInt(iniPath, L"Vision\\PointPick", L"MaxRayLenPx", 320);
+	ImportProfileInt(iniPath, L"Vision\\PointPick", L"MaxRayPerpPx", 90);
+	ImportProfileInt(iniPath, L"Vision\\PointPick", L"MaxRadiusPx", 140);
+	ImportProfileInt(iniPath, L"Vision\\PointPick", L"HoldLockMs", 3000);
+	ImportProfileInt(iniPath, L"Vision\\PointPick", L"HoldConfirmMs", 3000);
+	ImportProfileInt(iniPath, L"Vision\\PointPick", L"HoldCancelMs", 3000);
+	ImportProfileInt(iniPath, L"Vision\\PointPick", L"CancelFlashMs", 800);
+	ImportProfileInt(iniPath, L"Vision\\PointPick", L"IouSame_milli", 500);
 
 	ImportProfileInt(iniPath, L"Vision\\Aruco", L"MarkerLengthMm", 40);
 

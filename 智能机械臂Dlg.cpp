@@ -497,6 +497,25 @@ void C智能机械臂Dlg::LoadVisionSettingsFromProfile()
 	vp.arucoMarkerLengthMm = (double)app->GetProfileInt(L"Vision\\Aruco", L"MarkerLengthMm", (int)vp.arucoMarkerLengthMm);
 	vp.depthNearMm = app->GetProfileInt(L"Vision\\Depth", L"NearMm", vp.depthNearMm);
 	vp.depthFarMm = app->GetProfileInt(L"Vision\\Depth", L"FarMm", vp.depthFarMm);
+	vp.excludeHand = app->GetProfileInt(L"Vision", L"ExcludeHand", 1) ? true : false;
+	vp.excludeHandInflatePx = app->GetProfileInt(L"Vision", L"ExcludeHandInflatePx", vp.excludeHandInflatePx);
+	{
+		const int ovMilli = app->GetProfileInt(L"Vision", L"ExcludeHandOverlap_milli", (int)std::lround(vp.excludeHandMaxOverlap * 1000.0));
+		vp.excludeHandMaxOverlap = (double)ovMilli / 1000.0;
+	}
+	// PointPick params
+	vp.pointPickEnabled = app->GetProfileInt(L"Vision\\PointPick", L"Enabled", vp.pointPickEnabled ? 1 : 0) ? true : false;
+	vp.pointPickMaxRayLenPx = app->GetProfileInt(L"Vision\\PointPick", L"MaxRayLenPx", vp.pointPickMaxRayLenPx);
+	vp.pointPickMaxRayPerpPx = app->GetProfileInt(L"Vision\\PointPick", L"MaxRayPerpPx", vp.pointPickMaxRayPerpPx);
+	vp.pointPickMaxRadiusPx = app->GetProfileInt(L"Vision\\PointPick", L"MaxRadiusPx", vp.pointPickMaxRadiusPx);
+	vp.pointPickHoldLockMs = app->GetProfileInt(L"Vision\\PointPick", L"HoldLockMs", vp.pointPickHoldLockMs);
+	vp.pointPickHoldConfirmMs = app->GetProfileInt(L"Vision\\PointPick", L"HoldConfirmMs", vp.pointPickHoldConfirmMs);
+	vp.pointPickHoldCancelMs = app->GetProfileInt(L"Vision\\PointPick", L"HoldCancelMs", vp.pointPickHoldCancelMs);
+	vp.pointPickCancelFlashMs = app->GetProfileInt(L"Vision\\PointPick", L"CancelFlashMs", vp.pointPickCancelFlashMs);
+	{
+		const int iouMilli = app->GetProfileInt(L"Vision\\PointPick", L"IouSame_milli", (int)std::lround(vp.pointPickIouSame * 1000.0));
+		vp.pointPickIouSame = (double)iouMilli / 1000.0;
+	}
 	m_vision.SetParams(vp);
 
 	// Detector params
@@ -508,6 +527,56 @@ void C智能机械臂Dlg::LoadVisionSettingsFromProfile()
 	const int nmsMilli = app->GetProfileInt(L"Vision\\Detector", L"Nms_milli", (int)std::lround(dp.nmsThreshold * 1000.0f));
 	dp.confThreshold = (float)confMilli / 1000.0f;
 	dp.nmsThreshold = (float)nmsMilli / 1000.0f;
+
+	// Detector 模型路径兜底：若用户未配置，则默认使用 models\\detector\\yolov5n.onnx
+	// 注意：这里只“填默认 + 路径解析 + 写回配置”，不会强行要求文件存在；加载失败时 Detector 会自然返回无输出。
+	{
+		auto fileExists = [](const std::wstring& p) -> bool
+		{
+			if (p.empty()) return false;
+			const DWORD a = ::GetFileAttributesW(p.c_str());
+			return (a != INVALID_FILE_ATTRIBUTES) && ((a & FILE_ATTRIBUTE_DIRECTORY) == 0);
+		};
+		auto getExeDir = []() -> std::wstring
+		{
+			wchar_t buf[MAX_PATH] = {};
+			DWORD n = ::GetModuleFileNameW(nullptr, buf, ARRAYSIZE(buf));
+			std::wstring s(buf, buf + n);
+			const size_t pos = s.find_last_of(L"\\/");
+			if (pos != std::wstring::npos) s.resize(pos);
+			return s;
+		};
+		const std::wstring exeDir = getExeDir();
+		auto resolvePath = [&](const std::wstring& pathOrRel) -> std::wstring
+		{
+			if (fileExists(pathOrRel)) return pathOrRel;
+			if (!exeDir.empty())
+			{
+				std::wstring p = exeDir + L"\\" + pathOrRel;
+				if (fileExists(p)) return p;
+			}
+			return pathOrRel;
+		};
+
+		if (dp.onnxPath.empty())
+		{
+			dp.onnxPath = L"models\\detector\\yolov5n.onnx";
+			// YOLOv5 常用输入：640x640（如果用户没填过，给默认）
+			if (dp.inputW <= 0) dp.inputW = 640;
+			if (dp.inputH <= 0) dp.inputH = 640;
+		}
+		dp.onnxPath = resolvePath(dp.onnxPath);
+		// 若仍是“空/默认输入尺寸”，给一个合理默认（避免旧 ini 导出 320x320）
+		if (dp.inputW == 320 && dp.inputH == 320 && dp.onnxPath.find(L"yolov5") != std::wstring::npos)
+		{
+			dp.inputW = 640;
+			dp.inputH = 640;
+		}
+
+		app->WriteProfileString(L"Vision\\Detector", L"OnnxPath", CString(dp.onnxPath.c_str()));
+		app->WriteProfileInt(L"Vision\\Detector", L"InputW", dp.inputW);
+		app->WriteProfileInt(L"Vision\\Detector", L"InputH", dp.inputH);
+	}
 	m_vision.SetDetectorParams(dp);
 
 	// HandLandmarks params（Palm+Handpose ONNX）

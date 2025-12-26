@@ -51,6 +51,25 @@ public:
 		// 深度分档阈值（mm）：depth < Near => Near；depth > Far => Far；否则 Mid
 		int depthNearMm = 120;
 		int depthFarMm = 220;
+
+		// ===== 排除手部（为“指哪抓哪”做准备）=====
+		// 启用后：在 Detector/Auto/ColorTrack/最亮点 等“找目标物”的模式里，
+		// 先用 HandLandmarks 得到手的 bbox，再过滤掉与手框重叠的候选目标。
+		bool excludeHand = true;
+		int excludeHandInflatePx = 20;      // 手框扩张像素（更稳地排除手/手臂）
+		double excludeHandMaxOverlap = 0.3; // overlap = intersectArea / boxArea；超过则认为“是手/被手遮挡”
+
+		// ===== 指向选物（仅颜色反馈，不联动）=====
+		// 逻辑：Point(只伸食指) -> 在指向附近找物体 -> 指向同一物体连续 hold>=3s 锁定 -> Pinch hold>=3s 确认 -> OpenPalm hold>=3s 取消
+		bool pointPickEnabled = true;
+		int pointPickMaxRayLenPx = 320;     // 指向“前方”最大距离（像素）
+		int pointPickMaxRayPerpPx = 90;     // 到指向射线的最大垂距（像素）
+		int pointPickMaxRadiusPx = 140;     // fallback：若射线匹配不到，允许在指尖附近的搜索半径
+		int pointPickHoldLockMs = 3000;     // Point 持续指向同一物体 >= 3s -> 锁定
+		int pointPickHoldConfirmMs = 3000;  // Pinch >= 3s -> 确认夹取
+		int pointPickHoldCancelMs = 3000;   // OpenPalm >= 3s -> 取消
+		int pointPickCancelFlashMs = 800;   // 取消后蓝框闪烁时间
+		double pointPickIouSame = 0.5;      // 判定“同一物体”的 IoU 阈值（0..1）
 	};
 
 	struct Stats
