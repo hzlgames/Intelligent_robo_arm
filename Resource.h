@@ -154,6 +154,13 @@
 #define IDC_MAIN_CHECK_VS_OVERRIDE   1544
 #define IDC_MAIN_STATIC_VS_STATUS    1545
 
+// Main dialog: Vision recognition controls (independent from VS)
+#define IDC_MAIN_CHECK_VS_NODRIVE    1546
+#define IDC_MAIN_GROUP_VISION        1547
+#define IDC_MAIN_CHECK_VISION_PROC   1548
+#define IDC_MAIN_LBL_VISION_ALGO     1549
+#define IDC_MAIN_COMBO_VISION_ALGO   1550
+
 // String resources
 #define IDS_DIAG_TITLE               2000
 #define IDS_TAB_SERIAL               2001
@@ -175,7 +182,7 @@
 #ifndef APSTUDIO_READONLY_SYMBOLS
 
 #define _APS_NEXT_RESOURCE_VALUE	129
-#define _APS_NEXT_CONTROL_VALUE		1546
+#define _APS_NEXT_CONTROL_VALUE		1551
 #define _APS_NEXT_SYMED_VALUE		101
 #define _APS_NEXT_COMMAND_VALUE		32771
 #endif

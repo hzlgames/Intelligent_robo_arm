@@ -18,6 +18,7 @@
 #endif
 
 #include "KinematicsOverlayService.h"
+#include "VisionOverlayService.h"
 
 const DWORD NUM_BACK_BUFFERS = 2;
 
@@ -1412,6 +1413,119 @@ void DrawDevice::DrawOverlays(IDirect3DSurface9* pBB)
 			cv::putText(img, bufVs, cv::Point(12, 120), cv::FONT_HERSHEY_SIMPLEX, 0.55,
 			            snap.vsApplied ? cv::Scalar(0, 255, 0, 0) : cv::Scalar(200, 200, 200, 0),
 			            1, cv::LINE_AA);
+		}
+
+		// =========================================================
+		// Vision recognition overlay：Detector bbox / ArUco depth / Hand landmarks（后续扩展）
+		// =========================================================
+		{
+			const auto v = VisionOverlayService::Instance().GetSnapshot();
+			// 轻量时效保护：超过 800ms 的数据不画，避免“拖尾”
+			const ULONGLONG now = ::GetTickCount64();
+			if (v.tickMs != 0 && now >= v.tickMs && (now - v.tickMs) <= 800)
+			{
+				// Detector bbox
+				if (v.hasBox && v.box.w > 0 && v.box.h > 0)
+				{
+					const cv::Rect r(v.box.x, v.box.y, v.box.w, v.box.h);
+					const cv::Scalar col(0, 255, 255, 0);
+					cv::rectangle(img, r, col, 2, cv::LINE_AA);
+					cv::circle(img, cv::Point((int)std::lround(v.u), (int)std::lround(v.v)), 4, col, -1, cv::LINE_AA);
+
+					char b[128] = {};
+					if (v.hasConfidence)
+						sprintf_s(b, "Det id=%d conf=%.2f", v.classId, v.confidence);
+					else
+						sprintf_s(b, "Det id=%d", v.classId);
+					const int tx = std::max(0, r.x);
+					const int ty = std::max(0, r.y - 6);
+					cv::putText(img, b, cv::Point(tx, ty), cv::FONT_HERSHEY_SIMPLEX, 0.5, col, 1, cv::LINE_AA);
+				}
+
+				// ArUco depth (mm): show near the target point
+				if (v.hasDepthMm && v.hasTargetPx)
+				{
+					// 近/中/远分档
+					const double d = v.depthMm;
+					const int nearMm = std::max(1, v.depthNearMm);
+					const int farMm = std::max(nearMm + 1, v.depthFarMm);
+					const char* bin = "Mid";
+					cv::Scalar col(0, 255, 255, 0); // default: yellow
+					if (d < (double)nearMm)
+					{
+						bin = "Near";
+						col = cv::Scalar(0, 0, 255, 0); // red
+					}
+					else if (d > (double)farMm)
+					{
+						bin = "Far";
+						col = cv::Scalar(255, 200, 0, 0); // blue-ish
+					}
+
+					char b[128] = {};
+					sprintf_s(b, "Depth=%.0fmm %s", v.depthMm, bin);
+					const int tx = std::max(0, std::min(w - 1, (int)std::lround(v.u) + 8));
+					const int ty = std::max(0, std::min(h - 1, (int)std::lround(v.v) - 8));
+					cv::putText(img, b, cv::Point(tx, ty), cv::FONT_HERSHEY_SIMPLEX, 0.55, col, 1, cv::LINE_AA);
+				}
+
+				// Hand landmarks skeleton + gesture
+				if (v.hasHandLandmarks)
+				{
+					auto clampPt = [&](double x, double y) -> cv::Point
+					{
+						const int ix = std::max(0, std::min(w - 1, (int)std::lround(x)));
+						const int iy = std::max(0, std::min(h - 1, (int)std::lround(y)));
+						return cv::Point(ix, iy);
+					};
+
+					auto drawEdge = [&](int a, int b, const cv::Scalar& col)
+					{
+						const auto pa = clampPt(v.handPts[a].x, v.handPts[a].y);
+						const auto pb = clampPt(v.handPts[b].x, v.handPts[b].y);
+						cv::line(img, pa, pb, col, 2, cv::LINE_AA);
+					};
+
+					const cv::Scalar colEdge(0, 255, 0, 0);
+					const cv::Scalar colPt(0, 0, 255, 0);
+					// Thumb
+					drawEdge(0, 1, colEdge); drawEdge(1, 2, colEdge); drawEdge(2, 3, colEdge); drawEdge(3, 4, colEdge);
+					// Index
+					drawEdge(0, 5, colEdge); drawEdge(5, 6, colEdge); drawEdge(6, 7, colEdge); drawEdge(7, 8, colEdge);
+					// Middle
+					drawEdge(0, 9, colEdge); drawEdge(9, 10, colEdge); drawEdge(10, 11, colEdge); drawEdge(11, 12, colEdge);
+					// Ring
+					drawEdge(0, 13, colEdge); drawEdge(13, 14, colEdge); drawEdge(14, 15, colEdge); drawEdge(15, 16, colEdge);
+					// Pinky
+					drawEdge(0, 17, colEdge); drawEdge(17, 18, colEdge); drawEdge(18, 19, colEdge); drawEdge(19, 20, colEdge);
+					// Palm ring
+					drawEdge(5, 9, colEdge); drawEdge(9, 13, colEdge); drawEdge(13, 17, colEdge); drawEdge(17, 5, colEdge);
+
+					for (int i = 0; i < 21; i++)
+					{
+						const auto p = clampPt(v.handPts[i].x, v.handPts[i].y);
+						cv::circle(img, p, 2, colPt, -1, cv::LINE_AA);
+					}
+
+					const char* g = "Unknown";
+					switch (v.gesture)
+					{
+					case VisionOverlayService::Gesture::OpenPalm: g = "OpenPalm"; break;
+					case VisionOverlayService::Gesture::Fist: g = "Fist"; break;
+					case VisionOverlayService::Gesture::Point: g = "Point"; break;
+					case VisionOverlayService::Gesture::Pinch: g = "Pinch"; break;
+					default: g = "Unknown"; break;
+					}
+
+					char gb[128] = {};
+					sprintf_s(gb, "Gesture=%s pinch=%.2f", g, v.pinchStrength);
+					const auto p0 = clampPt(v.handPts[0].x, v.handPts[0].y);
+					cv::putText(img, gb, cv::Point(std::max(0, p0.x + 8), std::max(0, p0.y - 8)),
+					            cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(255, 255, 255, 0), 2, cv::LINE_AA);
+					cv::putText(img, gb, cv::Point(std::max(0, p0.x + 8), std::max(0, p0.y - 8)),
+					            cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(0, 0, 0, 0), 1, cv::LINE_AA);
+				}
+			}
 		}
 
 		// IK 失败原因（只显示短提示）

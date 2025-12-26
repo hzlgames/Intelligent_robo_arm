@@ -7,6 +7,7 @@
 
 #include "VisionDetector.h"
 #include "VisionGeometry.h"
+#include "VisionOverlayService.h"
 
 #include <algorithm>
 #include <cmath>
@@ -65,6 +66,19 @@ VisionDetector::Params VisionService::GetDetectorParams() const
 	return m_detector.GetParams();
 }
 
+void VisionService::SetHandParams(const VisionHandLandmarks::Params& p)
+{
+	std::lock_guard<std::mutex> lk(m_handMu);
+	m_hand.SetParams(p);
+	m_lastHandLoadAttemptMs = 0;
+}
+
+VisionHandLandmarks::Params VisionService::GetHandParams() const
+{
+	std::lock_guard<std::mutex> lk(m_handMu);
+	return m_hand.GetParams();
+}
+
 void VisionService::SetParams(const Params& p)
 {
 	std::lock_guard<std::mutex> lk(m_mu);
@@ -73,6 +87,8 @@ void VisionService::SetParams(const Params& p)
 	m_params.sampleStride = std::max(1, m_params.sampleStride);
 	m_params.emaAlpha = Clamp(m_params.emaAlpha, 0.0, 1.0);
 	m_params.arucoMarkerLengthMm = std::max(1.0, m_params.arucoMarkerLengthMm);
+	m_params.depthNearMm = std::max(1, m_params.depthNearMm);
+	m_params.depthFarMm = std::max(m_params.depthNearMm + 1, m_params.depthFarMm);
 }
 
 VisionService::Params VisionService::GetParams() const
@@ -102,6 +118,12 @@ VisionService::Stats VisionService::GetStats() const
 {
 	std::lock_guard<std::mutex> lk(m_statsMu);
 	return m_stats;
+}
+
+VisionService::Result VisionService::GetLastResult() const
+{
+	std::lock_guard<std::mutex> lk(m_resMu);
+	return m_lastResult;
 }
 
 void VisionService::Start()
@@ -181,6 +203,11 @@ void VisionService::ThreadMain()
 		double rayX = 0.0, rayY = 0.0, rayZ = 1.0;
 		bool hasDepth = false;
 		double depthMm = 0.0;
+		VisionDetector::Detection detBox{};
+		bool hasHandLm = false;
+		VisionOverlayService::Gesture handGesture = VisionOverlayService::Gesture::Unknown;
+		double handPinchStrength = 0.0;
+		std::array<VisionOverlayService::Point2, 21> handPts{};
 
 		// =========
 		// 1) ArUco
@@ -311,7 +338,7 @@ void VisionService::ThreadMain()
 #endif
 
 		// =================
-		// 2) Hand (双色贴纸：红=指尖，蓝=指根) -> (u,v) + rayXYZ
+		// 2) HandSticker (双色贴纸：红=指尖，蓝=指根) -> (u,v) + rayXYZ
 		// 3) ColorTrack (HSV 红色 blob) -> (u,v)
 		// =================
 #if defined(SMARTARM_HAS_OPENCV) && SMARTARM_HAS_OPENCV
@@ -353,8 +380,8 @@ void VisionService::ThreadMain()
 			return true;
 		};
 
-		// Hand：双色贴纸指向（强制模式）
-		if (!hasTarget && mode == Mode::Hand)
+		// HandSticker：双色贴纸指向（强制模式）
+		if (!hasTarget && mode == Mode::HandSticker)
 		{
 			try
 			{
@@ -520,6 +547,7 @@ void VisionService::ThreadMain()
 							v = (double)det.y + (double)det.h * 0.5;
 							conf = Clamp((double)det.confidence, 0.0, 1.0);
 							hasTarget = true;
+							detBox = det;
 						}
 					}
 					if (hasTarget)
@@ -539,6 +567,152 @@ void VisionService::ThreadMain()
 			}
 		}
 #endif
+
+		// ======================
+		// 5) HandLandmarks (Palm + Handpose ONNX)
+		// ======================
+		if (!hasTarget && mode == Mode::HandLandmarks)
+		{
+			const ULONGLONG now3 = ::GetTickCount64();
+			bool loaded = false;
+			VisionHandLandmarks::Hand hand;
+			VisionHandLandmarks::Params hp{};
+			{
+				std::lock_guard<std::mutex> lk(m_handMu);
+				loaded = m_hand.IsLoaded();
+				hp = m_hand.GetParams();
+				if (!loaded && (now3 - m_lastHandLoadAttemptMs > 1000))
+				{
+					m_lastHandLoadAttemptMs = now3;
+					std::wstring err;
+					(void)m_hand.EnsureLoaded(err);
+					loaded = m_hand.IsLoaded();
+				}
+			}
+
+			if (loaded)
+			{
+				try
+				{
+#if defined(SMARTARM_HAS_OPENCV) && SMARTARM_HAS_OPENCV
+					cv::Mat bgra((int)h, (int)w, CV_8UC4, rgb.data(), (size_t)w * 4);
+					cv::Mat bgr;
+					cv::cvtColor(bgra, bgr, cv::COLOR_BGRA2BGR);
+					{
+						std::lock_guard<std::mutex> lk(m_handMu);
+						if (m_hand.DetectBest(bgr.data, (int)bgr.cols, (int)bgr.rows, (int)bgr.step, hand) && hand.valid)
+						{
+							// ok
+						}
+						else
+						{
+							hand = VisionHandLandmarks::Hand{};
+						}
+					}
+					if (hand.valid)
+					{
+						// Use index fingertip as target
+						const double ix = (double)hand.pts[8 * 2 + 0];
+						const double iy = (double)hand.pts[8 * 2 + 1];
+						u = ix;
+						v = iy;
+						conf = Clamp((double)hand.confidence, 0.0, 1.0);
+						hasTarget = true;
+
+						// Approximate pointing ray: from MCP(5) to TIP(8)
+						const double bx = (double)hand.pts[5 * 2 + 0];
+						const double by = (double)hand.pts[5 * 2 + 1];
+						double rx = ix - bx;
+						double ry = iy - by;
+						double rz = 1.0;
+						const double n = std::sqrt(rx * rx + ry * ry + rz * rz);
+						if (n > 1e-6) { rx /= n; ry /= n; rz /= n; }
+						hasRay = true;
+						rayX = rx; rayY = ry; rayZ = rz;
+
+						// Gesture classification (rule-based)
+						const double x0 = (double)hand.pts[0 * 2 + 0];
+						const double y0 = (double)hand.pts[0 * 2 + 1];
+						const double handScale = std::max(10.0, std::max(std::fabs((double)hand.x2 - (double)hand.x1), std::fabs((double)hand.y2 - (double)hand.y1)));
+
+						auto dist = [&](int a, int b) -> double
+						{
+							const double ax = (double)hand.pts[a * 2 + 0];
+							const double ay = (double)hand.pts[a * 2 + 1];
+							const double bx2 = (double)hand.pts[b * 2 + 0];
+							const double by2 = (double)hand.pts[b * 2 + 1];
+							const double dx = ax - bx2;
+							const double dy = ay - by2;
+							return std::sqrt(dx * dx + dy * dy);
+						};
+
+						auto distToWrist = [&](int a) -> double
+						{
+							const double ax = (double)hand.pts[a * 2 + 0];
+							const double ay = (double)hand.pts[a * 2 + 1];
+							const double dx = ax - x0;
+							const double dy = ay - y0;
+							return std::sqrt(dx * dx + dy * dy);
+						};
+
+						auto isExtended = [&](int tip, int pip) -> bool
+						{
+							const double dt = distToWrist(tip);
+							const double dp2 = distToWrist(pip);
+							return dt > dp2 * 1.08; // mild margin
+						};
+
+						const bool idxExt = isExtended(8, 6);
+						const bool midExt = isExtended(12, 10);
+						const bool ringExt = isExtended(16, 14);
+						const bool pinkExt = isExtended(20, 18);
+						const int extCount = (idxExt ? 1 : 0) + (midExt ? 1 : 0) + (ringExt ? 1 : 0) + (pinkExt ? 1 : 0);
+
+						const double pinchDist = dist(4, 8);
+						const double pinchThresh = std::max(5.0, (double)hp.pinchThreshNorm * handScale);
+						const double pinchStrength = Clamp(1.0 - pinchDist / pinchThresh, 0.0, 1.0);
+
+						VisionOverlayService::Gesture g = VisionOverlayService::Gesture::Unknown;
+						if (pinchStrength > 0.0)
+						{
+							g = VisionOverlayService::Gesture::Pinch;
+						}
+						else if (idxExt && !midExt && !ringExt && !pinkExt)
+						{
+							g = VisionOverlayService::Gesture::Point;
+						}
+						else if (extCount >= 3)
+						{
+							g = VisionOverlayService::Gesture::OpenPalm;
+						}
+						else if (extCount == 0)
+						{
+							g = VisionOverlayService::Gesture::Fist;
+						}
+
+						hasHandLm = true;
+						for (int i = 0; i < 21; i++)
+						{
+							handPts[i].x = (double)hand.pts[i * 2 + 0];
+							handPts[i].y = (double)hand.pts[i * 2 + 1];
+						}
+						handGesture = g;
+						handPinchStrength = pinchStrength;
+					}
+#endif
+				}
+				catch (...)
+				{
+					hasTarget = false;
+				}
+			}
+
+			if (!hasTarget)
+			{
+				::Sleep(30);
+				continue;
+			}
+		}
 
 		// EMA 平滑，减少抖动
 		if (p.emaAlpha > 0.0 && p.emaAlpha < 1.0)
@@ -568,6 +742,64 @@ void VisionService::ThreadMain()
 		obs.rayZ = rayZ;
 
 		vs->UpdateObservation(obs);
+
+		// Publish last result for HUD (thread-safe)
+		{
+			Result r;
+			r.tickMs = obs.tickMs;
+			r.mode = (int)mode;
+			r.hasTargetPx = hasTarget;
+			r.u = u;
+			r.v = v;
+			r.hasDepthMm = hasDepth;
+			r.depthMm = depthMm;
+			r.hasConfidence = true;
+			r.confidence = conf;
+
+			// Detector bbox
+			if (mode == Mode::Detector && hasTarget)
+			{
+				r.hasBox = true;
+				r.boxX = detBox.x;
+				r.boxY = detBox.y;
+				r.boxW = detBox.w;
+				r.boxH = detBox.h;
+				r.classId = detBox.classId;
+			}
+
+			{
+				std::lock_guard<std::mutex> lk(m_resMu);
+				m_lastResult = r;
+			}
+
+			// Update overlay snapshot (convert to overlay format)
+			VisionOverlayService::Snapshot s;
+			s.tickMs = (unsigned long long)r.tickMs;
+			s.mode = r.mode;
+			s.hasTargetPx = r.hasTargetPx;
+			s.u = r.u;
+			s.v = r.v;
+			s.hasConfidence = r.hasConfidence;
+			s.confidence = r.confidence;
+			s.hasDepthMm = r.hasDepthMm;
+			s.depthMm = r.depthMm;
+			s.depthNearMm = p.depthNearMm;
+			s.depthFarMm = p.depthFarMm;
+			s.hasBox = r.hasBox;
+			s.box.x = r.boxX;
+			s.box.y = r.boxY;
+			s.box.w = r.boxW;
+			s.box.h = r.boxH;
+			s.classId = r.classId;
+			s.hasHandLandmarks = hasHandLm;
+			if (hasHandLm)
+			{
+				s.handPts = handPts;
+				s.gesture = handGesture;
+				s.pinchStrength = handPinchStrength;
+			}
+			VisionOverlayService::Instance().Update(s);
+		}
 
 		// Stats
 		frames++;

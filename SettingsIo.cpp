@@ -149,6 +149,10 @@ SettingsIo::Result SettingsIo::ExportToIni(const std::wstring& iniPath)
 	ExportProfileInt(iniPath, L"Vision", L"Mode", 0);
 	// AlgoEnabled: 0=手动(点击，不跑识别), 1=启用视觉识别（与 Mode 搭配）
 	ExportProfileInt(iniPath, L"Vision", L"AlgoEnabled", 1);
+	// ProcEnabled: 1=允许视觉线程产出识别结果（与 VS Enable 解耦）
+	ExportProfileInt(iniPath, L"Vision", L"ProcEnabled", 1);
+	// NoDrive: 1=仅测试（默认不允许视觉输出驱动运动）
+	ExportProfileInt(iniPath, L"Vision", L"NoDrive", 1);
 	ExportProfileInt(iniPath, L"Vision", L"ProcessPeriodMs", 33);
 	ExportProfileInt(iniPath, L"Vision", L"SampleStride", 8);
 	ExportProfileInt(iniPath, L"Vision", L"EmaAlpha_milli", 350); // 0..1000
@@ -156,12 +160,21 @@ SettingsIo::Result SettingsIo::ExportToIni(const std::wstring& iniPath)
 	// ArUco
 	ExportProfileInt(iniPath, L"Vision\\Aruco", L"MarkerLengthMm", 40);
 
+	// Depth binning (mm)
+	ExportProfileInt(iniPath, L"Vision\\Depth", L"NearMm", 120);
+	ExportProfileInt(iniPath, L"Vision\\Depth", L"FarMm", 220);
+
 	// Detector (ONNX)
 	ExportProfileString(iniPath, L"Vision\\Detector", L"OnnxPath", L"");
 	ExportProfileInt(iniPath, L"Vision\\Detector", L"InputW", 320);
 	ExportProfileInt(iniPath, L"Vision\\Detector", L"InputH", 320);
 	ExportProfileInt(iniPath, L"Vision\\Detector", L"Conf_milli", 500); // 0..1000
 	ExportProfileInt(iniPath, L"Vision\\Detector", L"Nms_milli", 400);  // 0..1000
+
+	// Hand (Palm + Landmarks ONNX)
+	ExportProfileString(iniPath, L"Vision\\Hand", L"PalmOnnxPath", L"");
+	ExportProfileString(iniPath, L"Vision\\Hand", L"LandmarkOnnxPath", L"");
+	ExportProfileInt(iniPath, L"Vision\\Hand", L"PinchThreshNorm_milli", 250); // 0..1000
 
 	r.ok = true;
 	return r;
@@ -237,17 +250,26 @@ SettingsIo::Result SettingsIo::ImportFromIni(const std::wstring& iniPath)
 	// ===== Vision =====
 	ImportProfileInt(iniPath, L"Vision", L"Mode", 0);
 	ImportProfileInt(iniPath, L"Vision", L"AlgoEnabled", 1);
+	ImportProfileInt(iniPath, L"Vision", L"ProcEnabled", 1);
+	ImportProfileInt(iniPath, L"Vision", L"NoDrive", 1);
 	ImportProfileInt(iniPath, L"Vision", L"ProcessPeriodMs", 33);
 	ImportProfileInt(iniPath, L"Vision", L"SampleStride", 8);
 	ImportProfileInt(iniPath, L"Vision", L"EmaAlpha_milli", 350);
 
 	ImportProfileInt(iniPath, L"Vision\\Aruco", L"MarkerLengthMm", 40);
 
+	ImportProfileInt(iniPath, L"Vision\\Depth", L"NearMm", 120);
+	ImportProfileInt(iniPath, L"Vision\\Depth", L"FarMm", 220);
+
 	ImportProfileString(iniPath, L"Vision\\Detector", L"OnnxPath", L"");
 	ImportProfileInt(iniPath, L"Vision\\Detector", L"InputW", 320);
 	ImportProfileInt(iniPath, L"Vision\\Detector", L"InputH", 320);
 	ImportProfileInt(iniPath, L"Vision\\Detector", L"Conf_milli", 500);
 	ImportProfileInt(iniPath, L"Vision\\Detector", L"Nms_milli", 400);
+
+	ImportProfileString(iniPath, L"Vision\\Hand", L"PalmOnnxPath", L"");
+	ImportProfileString(iniPath, L"Vision\\Hand", L"LandmarkOnnxPath", L"");
+	ImportProfileInt(iniPath, L"Vision\\Hand", L"PinchThreshNorm_milli", 250);
 
 	r.ok = true;
 	return r;

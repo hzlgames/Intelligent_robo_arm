@@ -9,6 +9,7 @@
 
 #include <afxcmn.h> // CSliderCtrl
 
+#include "Resource.h"
 #include "preview.h"
 #include "MotionController.h"
 #include "KinematicsConfig.h"
@@ -16,14 +17,6 @@
 #include "JogPadCtrl.h"
 #include "VisualServoController.h"
 #include "VisionService.h"
-
-// 动态创建控件的 ID（不在 .rc 里定义，但需要用于消息映射/定位）
-#ifndef IDC_MAIN_COMBO_VISION_ALGO
-#define IDC_MAIN_COMBO_VISION_ALGO 60001
-#endif
-#ifndef IDC_MAIN_STATIC_VISION_ALGO
-#define IDC_MAIN_STATIC_VISION_ALGO 60002
-#endif
 
 // C智能机械臂Dlg 对话框
 class C智能机械臂Dlg : public CDialogEx
@@ -65,6 +58,8 @@ protected:
 	afx_msg void OnHScroll(UINT nSBCode, UINT nPos, CScrollBar* pScrollBar);
 	afx_msg void OnStnClickedMainVideo();
 	afx_msg void OnCbnSelChangeVisionAlgo();
+	afx_msg void OnBnClickedVisionProcEnable();
+	afx_msg void OnBnClickedVsNoDrive();
 	afx_msg void OnTimer(UINT_PTR nIDEvent);
 	afx_msg void OnDestroy();
 	afx_msg void OnSize(UINT nType, int cx, int cy);
@@ -128,15 +123,18 @@ private:
 	CButton   m_grpMainVs;
 	CButton   m_chkVsEnable;
 	CComboBox m_comboVsMode;
-	// Vision algorithm (recognition) mode: dynamic controls (not in .rc)
+	CButton   m_chkVsOverride;
+	CButton   m_chkVsNoDrive; // 仅测试：不允许视觉输出驱动 Jog
+	CSliderCtrl m_sliderVsAdvance;
+	CStatic   m_staticVsStatus;
+
+	// Vision algorithm (recognition): controls in .rc
+	CButton   m_grpMainVision;
+	CButton   m_chkVisionProcEnable; // 识别启用（与 VS Enable 解耦）
 	CStatic   m_staticVisionAlgo;
 	CComboBox m_comboVisionAlgo;
 	bool      m_visionAlgoEnabled = true;                // false => 手动(点击)，不运行视觉识别
 	VisionService::Mode m_visionAlgoMode = VisionService::Mode::Auto;
-
-	CSliderCtrl m_sliderVsAdvance;
-	CButton   m_chkVsOverride;
-	CStatic   m_staticVsStatus;
 
 	CButton   m_grpMainJog;
 	CButton   m_grpMainStatus;

@@ -231,6 +231,8 @@
     <ClInclude Include="VisualServoTypes.h" />
     <ClInclude Include="VisionDetector.h" />
     <ClInclude Include="VisionGeometry.h" />
+    <ClInclude Include="VisionHandLandmarks.h" />
+    <ClInclude Include="VisionOverlayService.h" />
     <ClInclude Include="VisionService.h" />
     <ClInclude Include="智能机械臂.h" />
     <ClInclude Include="智能机械臂Dlg.h" />
@@ -258,6 +260,8 @@
     <ClCompile Include="VisualServoController.cpp" />
     <ClCompile Include="VisionDetector.cpp" />
     <ClCompile Include="VisionGeometry.cpp" />
+    <ClCompile Include="VisionHandLandmarks.cpp" />
+    <ClCompile Include="VisionOverlayService.cpp" />
     <ClCompile Include="VisionService.cpp" />
     <ClCompile Include="pch.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>

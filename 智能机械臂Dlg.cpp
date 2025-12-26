@@ -221,7 +221,14 @@ void C智能机械臂Dlg::DoDataExchange(CDataExchange* pDX)
 	DDX_Control(pDX, IDC_MAIN_COMBO_VS_MODE, m_comboVsMode);
 	DDX_Control(pDX, IDC_MAIN_SLIDER_VS_ADVANCE, m_sliderVsAdvance);
 	DDX_Control(pDX, IDC_MAIN_CHECK_VS_OVERRIDE, m_chkVsOverride);
+	DDX_Control(pDX, IDC_MAIN_CHECK_VS_NODRIVE, m_chkVsNoDrive);
 	DDX_Control(pDX, IDC_MAIN_STATIC_VS_STATUS, m_staticVsStatus);
+
+	// ===== 主界面：视觉识别（独立验收）=====
+	DDX_Control(pDX, IDC_MAIN_GROUP_VISION, m_grpMainVision);
+	DDX_Control(pDX, IDC_MAIN_CHECK_VISION_PROC, m_chkVisionProcEnable);
+	DDX_Control(pDX, IDC_MAIN_LBL_VISION_ALGO, m_staticVisionAlgo);
+	DDX_Control(pDX, IDC_MAIN_COMBO_VISION_ALGO, m_comboVisionAlgo);
 
 	// ===== 主界面：Jog区域控件（先搭框架） =====
 	DDX_Control(pDX, IDC_MAIN_GROUP_JOG, m_grpMainJog);
@@ -262,6 +269,8 @@ BEGIN_MESSAGE_MAP(C智能机械臂Dlg, CDialogEx)
 	ON_WM_HSCROLL()
 	ON_STN_CLICKED(IDC_MAIN_STATIC_VIDEO, &C智能机械臂Dlg::OnStnClickedMainVideo)
 	ON_CBN_SELCHANGE(IDC_MAIN_COMBO_VISION_ALGO, &C智能机械臂Dlg::OnCbnSelChangeVisionAlgo)
+	ON_BN_CLICKED(IDC_MAIN_CHECK_VISION_PROC, &C智能机械臂Dlg::OnBnClickedVisionProcEnable)
+	ON_BN_CLICKED(IDC_MAIN_CHECK_VS_NODRIVE, &C智能机械臂Dlg::OnBnClickedVsNoDrive)
 
 	ON_WM_TIMER()
 	ON_WM_DESTROY()
@@ -351,16 +360,9 @@ BOOL C智能机械臂Dlg::OnInitDialog()
 	m_sliderVsAdvance.SetPos(0);
 	m_staticVsStatus.SetWindowTextW(L"VS:OFF");
 
-	// ===== 视觉识别模式（VisionService::Mode）UI：动态创建（不改 .rc 也能用）=====
+	// ===== 视觉识别（VisionService::Mode）UI：来自 .rc（便于资源编辑器调整）=====
+	if (m_comboVisionAlgo.GetSafeHwnd())
 	{
-		// 初始位置会在 RelayoutMainControls 里重新布局，这里给个占位矩形即可
-		CRect r(0, 0, 10, 10);
-		m_staticVisionAlgo.Create(L"识别：", WS_CHILD | WS_VISIBLE, r, this, IDC_MAIN_STATIC_VISION_ALGO);
-		m_comboVisionAlgo.Create(WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
-		                         r, this, IDC_MAIN_COMBO_VISION_ALGO);
-		m_staticVisionAlgo.SetFont(GetFont());
-		m_comboVisionAlgo.SetFont(GetFont());
-
 		m_comboVisionAlgo.ResetContent();
 		m_comboVisionAlgo.AddString(L"手动(点击)");                 // 0
 		m_comboVisionAlgo.AddString(L"自动(Auto)");                 // 1
@@ -368,8 +370,8 @@ BOOL C智能机械臂Dlg::OnInitDialog()
 		m_comboVisionAlgo.AddString(L"色块(红)(ColorTrack)");       // 3
 		m_comboVisionAlgo.AddString(L"ArUco");                      // 4
 		m_comboVisionAlgo.AddString(L"Detector(ONNX/OpenCV DNN)");  // 5
-		m_comboVisionAlgo.AddString(L"双色贴纸(Hand)");             // 6
-
+		m_comboVisionAlgo.AddString(L"双色贴纸(HandSticker)");      // 6
+		m_comboVisionAlgo.AddString(L"手部关键点(HandLandmarks)");  // 7
 		m_comboVisionAlgo.SetCurSel(1); // 默认 Auto（后续 LoadVisionSettingsFromProfile 会覆盖）
 	}
 
@@ -382,7 +384,8 @@ BOOL C智能机械臂Dlg::OnInitDialog()
 	m_vision.SetVisualServo(&m_vs);
 	m_vision.SetPreview(m_pMainPreview); // 可能为空；StartMainPreview 后会更新
 	LoadVisionSettingsFromProfile();
-	m_vision.SetEnabled(true);
+	// 识别启用由 profile/checkbox 控制；默认开启，但与 VS Enable 解耦
+	m_vision.SetEnabled(m_chkVisionProcEnable.GetSafeHwnd() && (m_chkVisionProcEnable.GetCheck() == BST_CHECKED) && m_visionAlgoEnabled);
 	m_vision.Start();
 
 	// 以“当前姿态估计（优先回读，否则home）”的 FK 结果作为初始目标，避免一开始就不可达
@@ -443,7 +446,8 @@ void C智能机械臂Dlg::SyncVisionAlgoUiFromState()
 	case VisionService::Mode::ColorTrack: sel = 3; break;
 	case VisionService::Mode::Aruco: sel = 4; break;
 	case VisionService::Mode::Detector: sel = 5; break;
-	case VisionService::Mode::Hand: sel = 6; break;
+	case VisionService::Mode::HandSticker: sel = 6; break;
+	case VisionService::Mode::HandLandmarks: sel = 7; break;
 	default: sel = 1; break;
 	}
 	m_comboVisionAlgo.SetCurSel(sel);
@@ -453,6 +457,20 @@ void C智能机械臂Dlg::LoadVisionSettingsFromProfile()
 {
 	CWinApp* app = AfxGetApp();
 	if (!app) return;
+
+	// ProcEnabled：视觉线程是否产出识别结果（与 VS Enable 解耦）
+	const int procOn = app->GetProfileInt(L"Vision", L"ProcEnabled", 1);
+	if (m_chkVisionProcEnable.GetSafeHwnd())
+	{
+		m_chkVisionProcEnable.SetCheck(procOn ? BST_CHECKED : BST_UNCHECKED);
+	}
+
+	// NoDrive：仅测试（默认开启，避免无意联动运动）
+	const int noDrive = app->GetProfileInt(L"Vision", L"NoDrive", 1);
+	if (m_chkVsNoDrive.GetSafeHwnd())
+	{
+		m_chkVsNoDrive.SetCheck(noDrive ? BST_CHECKED : BST_UNCHECKED);
+	}
 
 	// AlgoEnabled：0=手动(点击)，1=启用视觉识别（与 Mode 搭配）
 	m_visionAlgoEnabled = app->GetProfileInt(L"Vision", L"AlgoEnabled", 1) ? true : false;
@@ -464,7 +482,8 @@ void C智能机械臂Dlg::LoadVisionSettingsFromProfile()
 	else if (mode == 2) m = VisionService::Mode::Aruco;
 	else if (mode == 3) m = VisionService::Mode::ColorTrack;
 	else if (mode == 4) m = VisionService::Mode::Detector;
-	else if (mode == 5) m = VisionService::Mode::Hand;
+	else if (mode == 5) m = VisionService::Mode::HandSticker;
+	else if (mode == 6) m = VisionService::Mode::HandLandmarks;
 	m_vision.SetMode(m);
 	m_visionAlgoMode = m;
 	SyncVisionAlgoUiFromState();
@@ -476,6 +495,8 @@ void C智能机械臂Dlg::LoadVisionSettingsFromProfile()
 	const int emaMilli = app->GetProfileInt(L"Vision", L"EmaAlpha_milli", (int)std::lround(vp.emaAlpha * 1000.0));
 	vp.emaAlpha = (double)emaMilli / 1000.0;
 	vp.arucoMarkerLengthMm = (double)app->GetProfileInt(L"Vision\\Aruco", L"MarkerLengthMm", (int)vp.arucoMarkerLengthMm);
+	vp.depthNearMm = app->GetProfileInt(L"Vision\\Depth", L"NearMm", vp.depthNearMm);
+	vp.depthFarMm = app->GetProfileInt(L"Vision\\Depth", L"FarMm", vp.depthFarMm);
 	m_vision.SetParams(vp);
 
 	// Detector params
@@ -488,6 +509,76 @@ void C智能机械臂Dlg::LoadVisionSettingsFromProfile()
 	dp.confThreshold = (float)confMilli / 1000.0f;
 	dp.nmsThreshold = (float)nmsMilli / 1000.0f;
 	m_vision.SetDetectorParams(dp);
+
+	// HandLandmarks params（Palm+Handpose ONNX）
+	{
+		VisionHandLandmarks::Params hp = m_vision.GetHandParams();
+		// 兼容历史键名：LandmarkOnnxPath（旧文档/旧导入） vs HandposeOnnxPath（更直观的新名字）
+		// 说明：日志证据表明当前运行时路径为空（palmPathEmpty/handposePathEmpty=1），会导致模型永远无法 loaded，从而无任何叠加。
+		std::wstring palmPath = std::wstring(app->GetProfileString(L"Vision\\Hand", L"PalmOnnxPath", L"").GetString());
+		std::wstring handposePath = std::wstring(app->GetProfileString(L"Vision\\Hand", L"LandmarkOnnxPath", L"").GetString());
+		if (handposePath.empty())
+		{
+			handposePath = std::wstring(app->GetProfileString(L"Vision\\Hand", L"HandposeOnnxPath", L"").GetString());
+		}
+
+		// 当未配置时，自动使用项目自带相对路径（你已放在 models\\hands）
+		// 同时做“以 exe 目录为基准”的兼容：即使用户从资源管理器双击 exe，也能找到模型文件。
+		auto fileExists = [](const std::wstring& p) -> bool
+		{
+			if (p.empty()) return false;
+			const DWORD a = ::GetFileAttributesW(p.c_str());
+			return (a != INVALID_FILE_ATTRIBUTES) && ((a & FILE_ATTRIBUTE_DIRECTORY) == 0);
+		};
+		auto getExeDir = []() -> std::wstring
+		{
+			wchar_t buf[MAX_PATH] = {};
+			DWORD n = ::GetModuleFileNameW(nullptr, buf, ARRAYSIZE(buf));
+			std::wstring s(buf, buf + n);
+			const size_t pos = s.find_last_of(L"\\/");
+			if (pos != std::wstring::npos) s.resize(pos);
+			return s;
+		};
+		const std::wstring exeDir = getExeDir();
+		auto resolvePath = [&](const std::wstring& pathOrRel) -> std::wstring
+		{
+			if (fileExists(pathOrRel)) return pathOrRel;
+			if (!exeDir.empty())
+			{
+				std::wstring p = exeDir + L"\\" + pathOrRel;
+				if (fileExists(p)) return p;
+			}
+			return pathOrRel; // 兜底：保留原值（后续 EnsureLoaded 会给出错误）
+		};
+
+		if (palmPath.empty())
+		{
+			palmPath = L"models\\hands\\palm_detection_mediapipe_2023feb.onnx";
+		}
+		if (handposePath.empty())
+		{
+			handposePath = L"models\\hands\\handpose_estimation_mediapipe_2023feb.onnx";
+		}
+
+		// 统一做一次路径解析（支持相对/绝对）
+		palmPath = resolvePath(palmPath);
+		handposePath = resolvePath(handposePath);
+
+		hp.palmOnnxPath = palmPath;
+		hp.handposeOnnxPath = handposePath;
+		const int pinchMilli = app->GetProfileInt(L"Vision\\Hand", L"PinchThreshNorm_milli", (int)std::lround(hp.pinchThreshNorm * 1000.0f));
+		hp.pinchThreshNorm = (float)pinchMilli / 1000.0f;
+		m_vision.SetHandParams(hp);
+
+		// 将兜底路径写回 profile，方便导出 ini / 下次启动直接生效
+		app->WriteProfileString(L"Vision\\Hand", L"PalmOnnxPath", CString(hp.palmOnnxPath.c_str()));
+		// 继续沿用旧键名导出（与现有 SettingsIo / 文档保持一致）
+		app->WriteProfileString(L"Vision\\Hand", L"LandmarkOnnxPath", CString(hp.handposeOnnxPath.c_str()));
+	}
+
+	// Apply enable state immediately (thread can stay running, but output toggles)
+	const bool procEnable = (m_chkVisionProcEnable.GetSafeHwnd() && m_chkVisionProcEnable.GetCheck() == BST_CHECKED);
+	m_vision.SetEnabled(procEnable && m_visionAlgoEnabled);
 }
 
 LRESULT C智能机械臂Dlg::OnSettingsImported(WPARAM /*wParam*/, LPARAM /*lParam*/)
@@ -516,7 +607,8 @@ void C智能机械臂Dlg::OnCbnSelChangeVisionAlgo()
 		else if (sel == 3) m = VisionService::Mode::ColorTrack;
 		else if (sel == 4) m = VisionService::Mode::Aruco;
 		else if (sel == 5) m = VisionService::Mode::Detector;
-		else if (sel == 6) m = VisionService::Mode::Hand;
+		else if (sel == 6) m = VisionService::Mode::HandSticker;
+		else if (sel == 7) m = VisionService::Mode::HandLandmarks;
 		else m = VisionService::Mode::Auto;
 
 		m_vision.SetMode(m);
@@ -524,8 +616,8 @@ void C智能机械臂Dlg::OnCbnSelChangeVisionAlgo()
 	}
 
 	// 立即应用开关（OnTimer 也会持续应用）
-	const bool vsEnable = (m_chkVsEnable.GetSafeHwnd() && m_chkVsEnable.GetCheck() == BST_CHECKED);
-	m_vision.SetEnabled(vsEnable && m_visionAlgoEnabled);
+	const bool procEnable = (m_chkVisionProcEnable.GetSafeHwnd() && m_chkVisionProcEnable.GetCheck() == BST_CHECKED);
+	m_vision.SetEnabled(procEnable && m_visionAlgoEnabled);
 
 	// 持久化（便于下次启动/导出 ini）
 	if (CWinApp* app = AfxGetApp())
@@ -540,10 +632,31 @@ void C智能机械臂Dlg::OnCbnSelChangeVisionAlgo()
 		case VisionService::Mode::Aruco: mode = 2; break;
 		case VisionService::Mode::ColorTrack: mode = 3; break;
 		case VisionService::Mode::Detector: mode = 4; break;
-		case VisionService::Mode::Hand: mode = 5; break;
+		case VisionService::Mode::HandSticker: mode = 5; break;
+		case VisionService::Mode::HandLandmarks: mode = 6; break;
 		default: mode = 0; break;
 		}
 		app->WriteProfileInt(L"Vision", L"Mode", mode);
+	}
+}
+
+void C智能机械臂Dlg::OnBnClickedVisionProcEnable()
+{
+	// 视觉识别启用：仅控制 VisionService 是否产出观测/结果；线程仍常驻运行
+	const bool procEnable = (m_chkVisionProcEnable.GetSafeHwnd() && m_chkVisionProcEnable.GetCheck() == BST_CHECKED);
+	m_vision.SetEnabled(procEnable && m_visionAlgoEnabled);
+	if (CWinApp* app = AfxGetApp())
+	{
+		app->WriteProfileInt(L"Vision", L"ProcEnabled", procEnable ? 1 : 0);
+	}
+}
+
+void C智能机械臂Dlg::OnBnClickedVsNoDrive()
+{
+	const bool noDrive = (m_chkVsNoDrive.GetSafeHwnd() && m_chkVsNoDrive.GetCheck() == BST_CHECKED);
+	if (CWinApp* app = AfxGetApp())
+	{
+		app->WriteProfileInt(L"Vision", L"NoDrive", noDrive ? 1 : 0);
 	}
 }
 
@@ -890,10 +1003,11 @@ void C智能机械臂Dlg::OnTimer(UINT_PTR nIDEvent)
 		// ===== 视觉跟随（Visual Servo）=====
 		const bool vsEnable = (m_chkVsEnable.GetSafeHwnd() && m_chkVsEnable.GetCheck() == BST_CHECKED);
 		m_vs.SetEnabled(vsEnable);
-		// 视觉线程默认一直跑；这里用开关控制“是否产出观测”。
-		// 说明：当识别模式选“手动(点击)”时，m_visionAlgoEnabled=false，
-		// 让你用鼠标点画面生成观测，不会被最亮点/色块等算法立刻覆盖。
-		m_vision.SetEnabled(vsEnable && m_visionAlgoEnabled);
+		// 视觉线程默认一直跑；这里用“识别启用”开关控制是否产出结果（与 VS Enable 解耦）。
+		// 说明：当识别模式选“手动(点击)”时，m_visionAlgoEnabled=false，让你用鼠标点画面生成观测，
+		// 不会被最亮点/色块等算法立刻覆盖。
+		const bool procEnable = (m_chkVisionProcEnable.GetSafeHwnd() && m_chkVisionProcEnable.GetCheck() == BST_CHECKED);
+		m_vision.SetEnabled(procEnable && m_visionAlgoEnabled);
 
 		// Mode
 		if (m_comboVsMode.GetSafeHwnd())
@@ -955,7 +1069,8 @@ void C智能机械臂Dlg::OnTimer(UINT_PTR nIDEvent)
 
 		// Decide whether to apply visual output to jog
 		const bool overrideManual = (m_chkVsOverride.GetSafeHwnd() && m_chkVsOverride.GetCheck() == BST_CHECKED);
-		const bool useVs = vsEnable && (overrideManual || !in.active);
+		const bool noDrive = (m_chkVsNoDrive.GetSafeHwnd() && m_chkVsNoDrive.GetCheck() == BST_CHECKED);
+		const bool useVs = vsEnable && !noDrive && (overrideManual || !in.active);
 
 		// manual input is the default
 		m_jog.SetInputState(in);
@@ -982,6 +1097,10 @@ void C智能机械臂Dlg::OnTimer(UINT_PTR nIDEvent)
 			{
 				s = L"VS:suppressed (manual)";
 			}
+			else if (noDrive)
+			{
+				s = L"VS:TEST (no drive)";
+			}
 			else
 			{
 				const auto st = m_vision.GetStats();
@@ -995,7 +1114,8 @@ void C智能机械臂Dlg::OnTimer(UINT_PTR nIDEvent)
 					case VisionService::Mode::ColorTrack: algo = L"Color"; break;
 					case VisionService::Mode::Aruco: algo = L"Aruco"; break;
 					case VisionService::Mode::Detector: algo = L"Detector"; break;
-					case VisionService::Mode::Hand: algo = L"Hand"; break;
+						case VisionService::Mode::HandSticker: algo = L"Sticker"; break;
+						case VisionService::Mode::HandLandmarks: algo = L"HandLM"; break;
 					default: algo = L"Auto"; break;
 					}
 				}
@@ -1278,9 +1398,10 @@ void C智能机械臂Dlg::OnSize(UINT nType, int cx, int cy)
 	// ===== 右侧面板 =====
 	const int panelTop = topBarH + margin;
 	const int serialH = 90;
-	const int vsH = 150; // 增加“识别模式”一行
+	const int vsH = 115;     // 视觉跟随组：两行复选框 + 模式 + 推进 + 状态
+	const int visionH = 75;  // 视觉识别组：识别启用 + 算法下拉
 	const int statusH = 90;
-	const int spacing = 15;
+	const int spacing = 12;
 
 	// 串口组
 	defer(m_grpMainSerial, rightX, panelTop, rightW, serialH);
@@ -1291,40 +1412,38 @@ void C智能机械臂Dlg::OnSize(UINT nType, int cx, int cy)
 	defer(m_chkMainSimulate, rightX + 15, panelTop + 58, 60, chkH);
 	defer(m_staticMainSerialStatus, rightX + 85, panelTop + 58, rightW - 100, chkH);
 
-	// 视觉跟随组 (重构布局：避免文字截断)
+	// 视觉跟随组（只放“跟随相关”控件）
 	const int vsY = panelTop + serialH + spacing;
 	defer(m_grpMainVs, rightX, vsY, rightW, vsH);
 	
-	// Line 1: 启用 + 覆盖
-	defer(m_chkVsEnable, rightX + 15, vsY + 25, 70, chkH);
-	defer(m_chkVsOverride, rightX + 100, vsY + 25, 100, chkH);
-	
-	// Line 2: 识别模式（动态控件）
-	if (m_staticVisionAlgo.GetSafeHwnd())
-	{
-		defer(m_staticVisionAlgo, rightX + 15, vsY + 50, 40, chkH);
-	}
-	if (m_comboVisionAlgo.GetSafeHwnd())
-	{
-		defer(m_comboVisionAlgo, rightX + 60, vsY + 48, rightW - 75, comboH);
-	}
+	// Row 1: VS启用 + 模式
+	defer(m_chkVsEnable, rightX + 15, vsY + 25, 65, chkH);
+	deferId(IDC_MAIN_LBL_VS_MODE, rightX + 85, vsY + 25, 40, chkH);
+	defer(m_comboVsMode, rightX + 125, vsY + 23, rightW - 140, comboH);
 
-	// Line 3: 控制模式 (Label + Combo)
-	deferId(IDC_MAIN_LBL_VS_MODE, rightX + 15, vsY + 74, 40, chkH);
-	defer(m_comboVsMode, rightX + 60, vsY + 72, rightW - 75, comboH);
+	// Row 2: 覆盖 + 仅测试
+	defer(m_chkVsOverride, rightX + 15, vsY + 50, 55, chkH);
+	defer(m_chkVsNoDrive, rightX + 75, vsY + 50, 60, chkH);
 
-	// Line 4: 推进 (Label + Slider)
-	deferId(IDC_MAIN_LBL_VS_ADVANCE, rightX + 15, vsY + 98, 40, chkH);
-	defer(m_sliderVsAdvance, rightX + 60, vsY + 96, rightW - 75, 20);
+	// Row 3: 推进
+	deferId(IDC_MAIN_LBL_VS_ADVANCE, rightX + 15, vsY + 74, 40, chkH);
+	defer(m_sliderVsAdvance, rightX + 60, vsY + 72, rightW - 75, 20);
 
-	// Line 5: 状态
-	defer(m_staticVsStatus, rightX + 15, vsY + 122, rightW - 30, chkH);
+	// Row 4: 状态
+	defer(m_staticVsStatus, rightX + 15, vsY + 94, rightW - 30, chkH);
+
+	// 视觉识别组（只放“识别相关”控件）
+	const int visionY = vsY + vsH + spacing;
+	defer(m_grpMainVision, rightX, visionY, rightW, visionH);
+	defer(m_chkVisionProcEnable, rightX + 15, visionY + 25, 70, chkH);
+	defer(m_staticVisionAlgo, rightX + 90, visionY + 25, 40, chkH);
+	defer(m_comboVisionAlgo, rightX + 130, visionY + 23, rightW - 145, comboH);
 
 	// Jog 组（JogPad 强制正方形）
-	const int jogY = vsY + vsH + spacing;
+	const int jogY = visionY + visionH + spacing;
 	// 计算可用高度，决定正方形边长（既要“正方形”，也要避免被挤爆）
 	const int panelH = std::max(0, bottomAreaTop - panelTop);
-	const int availForJog = std::max(0, panelH - serialH - spacing - vsH - spacing - statusH - spacing);
+	const int availForJog = std::max(0, panelH - serialH - spacing - vsH - spacing - visionH - spacing - statusH - spacing);
 
 	const int padInnerMargin = 20;
 	const int sliderAreaH = 70; // 两条滑条+标签的预算高度

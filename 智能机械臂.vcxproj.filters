@@ -87,6 +87,12 @@
     <ClInclude Include="VisionGeometry.h">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="VisionHandLandmarks.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="VisionOverlayService.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="智能机械臂.cpp">
@@ -138,6 +144,12 @@
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="VisionGeometry.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="VisionHandLandmarks.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="VisionOverlayService.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
   </ItemGroup>
