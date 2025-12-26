@@ -48,6 +48,21 @@ namespace VisionGeometry
 	{
 		return Point3{ pCam.x, pCam.z, -pCam.y };
 	}
+
+	// 姿态相关的 Cam->Base 向量/射线映射（仅旋转，不含平移）。
+	// yaw/pitch 来自 ArmStateEstimator：
+	// - yaw: ArmKinematics 的 q1（正方向等价于绕 +Z 的“负向”旋转）
+	// - pitch: q2+q3+q4（与 PoseTarget::pitch_deg 定义一致）
+	bool MapCamVectorToBase_YawPitch(double yawRad, double pitchRad, const Point3& vCam, Point3& outVBase);
+	inline bool MapCamRayToBase_YawPitch(double yawRad, double pitchRad, const Ray& rCam, Ray& outRBase)
+	{
+		Point3 vb;
+		if (!MapCamVectorToBase_YawPitch(yawRad, pitchRad, Point3{ rCam.x, rCam.y, rCam.z }, vb)) return false;
+		outRBase.x = vb.x;
+		outRBase.y = vb.y;
+		outRBase.z = vb.z;
+		return true;
+	}
 }
 
 

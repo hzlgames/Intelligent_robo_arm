@@ -206,6 +206,10 @@
     <ClInclude Include="ArmCommsService.h" />
     <ClInclude Include="ArmProtocol.h" />
     <ClInclude Include="ArmKinematics.h" />
+    <ClInclude Include="ArmStateEstimator.h" />
+    <ClInclude Include="ToolConfig.h" />
+    <ClInclude Include="ToolGeometry.h" />
+    <ClInclude Include="SeeAndFetchStateMachine.h" />
     <ClInclude Include="BufferLock.h" />
     <ClInclude Include="CameraDiagPage.h" />
     <ClInclude Include="ControlDiagPage.h" />
@@ -241,6 +245,10 @@
     <ClCompile Include="ArmCommsService.cpp" />
     <ClCompile Include="ArmKinematics.cpp" />
     <ClCompile Include="ArmProtocol.cpp" />
+    <ClCompile Include="ArmStateEstimator.cpp" />
+    <ClCompile Include="ToolConfig.cpp" />
+    <ClCompile Include="ToolGeometry.cpp" />
+    <ClCompile Include="SeeAndFetchStateMachine.cpp" />
     <ClCompile Include="CameraDiagPage.cpp" />
     <ClCompile Include="ControlDiagPage.cpp" />
     <ClCompile Include="device.cpp" />

@@ -314,13 +314,13 @@ void CSerialDiagPage::OnBnClickedSendMove()
 	st.id = 1;
 	st.position = 500;
 	servos.push_back(st);
-	ArmCommsService::Instance().EnqueueTx(ArmProtocol::PackMove(servos, 800));
+	ArmCommsService::Instance().EnqueueMove(ArmProtocol::PackMove(servos, 800));
 }
 
 void CSerialDiagPage::OnBnClickedSendReadAll()
 {
 	std::vector<uint8_t> ids = { 1, 2, 3, 4, 5, 6 };
-	ArmCommsService::Instance().EnqueueTx(ArmProtocol::PackReadPosition(ids));
+	ArmCommsService::Instance().EnqueueRead(ArmProtocol::PackReadPosition(ids));
 }
 
 // ============== Manual move / calibration ==============
@@ -460,7 +460,7 @@ void CSerialDiagPage::OnBnClickedMoveSend()
 	st.id = static_cast<uint8_t>(id);
 	st.position = static_cast<uint16_t>(pos);
 	servos.push_back(st);
-	ArmCommsService::Instance().EnqueueTx(ArmProtocol::PackMove(servos, static_cast<uint16_t>(time)));
+	ArmCommsService::Instance().EnqueueMove(ArmProtocol::PackMove(servos, static_cast<uint16_t>(time)));
 }
 
 void CSerialDiagPage::OnBnClickedReadId()
@@ -468,7 +468,7 @@ void CSerialDiagPage::OnBnClickedReadId()
 	const int id = GetIntFromEdit(m_editMoveId, 1);
 	std::vector<uint8_t> ids;
 	ids.push_back(static_cast<uint8_t>(id));
-	ArmCommsService::Instance().EnqueueTx(ArmProtocol::PackReadPosition(ids));
+	ArmCommsService::Instance().EnqueueRead(ArmProtocol::PackReadPosition(ids));
 }
 
 void CSerialDiagPage::OnBnClickedSetMin()

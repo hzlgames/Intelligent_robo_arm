@@ -108,7 +108,15 @@ void ArmCommsService::Tick()
 
 void ArmCommsService::ClearTxQueue()
 {
-	m_txQueue.clear();
+	m_txEStopQueue.clear();
+	m_txMoveQueue.clear();
+	m_txReadQueue.clear();
+	m_txOtherQueue.clear();
+}
+
+void ArmCommsService::ClearMoveQueue()
+{
+	m_txMoveQueue.clear();
 }
 
 void ArmCommsService::EmergencyStop()
@@ -167,12 +175,22 @@ int ArmCommsService::GetThrottleMs() const
 
 void ArmCommsService::EnqueueTx(std::vector<uint8_t> bytes)
 {
-	m_txQueue.push_back(std::move(bytes));
+	m_txOtherQueue.push_back(std::move(bytes));
+}
+
+void ArmCommsService::EnqueueMove(std::vector<uint8_t> bytes)
+{
+	m_txMoveQueue.push_back(std::move(bytes));
+}
+
+void ArmCommsService::EnqueueRead(std::vector<uint8_t> bytes)
+{
+	m_txReadQueue.push_back(std::move(bytes));
 }
 
 void ArmCommsService::PumpTx()
 {
-	if (m_txQueue.empty())
+	if (m_txEStopQueue.empty() && m_txMoveQueue.empty() && m_txReadQueue.empty() && m_txOtherQueue.empty())
 	{
 		return;
 	}
@@ -183,8 +201,29 @@ void ArmCommsService::PumpTx()
 	{
 		return;
 	}
-	auto bytes = std::move(m_txQueue.front());
-	m_txQueue.pop_front();
+
+	// Priority: EStop > Move > Read > Other
+	std::vector<uint8_t> bytes;
+	if (!m_txEStopQueue.empty())
+	{
+		bytes = std::move(m_txEStopQueue.front());
+		m_txEStopQueue.pop_front();
+	}
+	else if (!m_txMoveQueue.empty())
+	{
+		bytes = std::move(m_txMoveQueue.front());
+		m_txMoveQueue.pop_front();
+	}
+	else if (!m_txReadQueue.empty())
+	{
+		bytes = std::move(m_txReadQueue.front());
+		m_txReadQueue.pop_front();
+	}
+	else
+	{
+		bytes = std::move(m_txOtherQueue.front());
+		m_txOtherQueue.pop_front();
+	}
 	TxBytesNow(bytes);
 	m_lastTxTick = GetTickCount();
 }

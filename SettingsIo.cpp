@@ -3,6 +3,7 @@
 #include "SettingsIo.h"
 
 #include "MotionConfig.h"
+#include "KinematicsConfig.h"
 
 #include <windows.h>
 #include <string>
@@ -10,7 +11,7 @@
 namespace
 {
 	// INI schema version (bump if keys/sections change).
-	constexpr int kIniVersion = 2;
+	constexpr int kIniVersion = 3;
 
 	bool WriteStringW(const std::wstring& iniPath, const wchar_t* section, const wchar_t* key, const std::wstring& value)
 	{
@@ -144,6 +145,38 @@ SettingsIo::Result SettingsIo::ExportToIni(const std::wstring& iniPath)
 		ExportProfileInt(iniPath, sec, L"Invert", 0);
 	}
 
+	// ===== Kinematics (Arm model calibration) =====
+	// Links (mm)
+	ExportProfileInt(iniPath, L"Kinematics\\Links", L"L_base_mm", 80);
+	ExportProfileInt(iniPath, L"Kinematics\\Links", L"L_arm1_mm", 100);
+	ExportProfileInt(iniPath, L"Kinematics\\Links", L"L_arm2_mm", 95);
+	ExportProfileInt(iniPath, L"Kinematics\\Links", L"L_wrist_mm", 95);
+	ExportProfileInt(iniPath, L"Kinematics\\Links", L"L_cam_mm", 55);
+
+	// Joint calib (J1..J5): two-point calibration + zero offset (milli-degree)
+	// Defaults align with current Reference/mechanics.md sample values (can be overridden by profile/ini).
+	const int defPosAt0Deg[6] = { 0, 500, 500, 500, 500, 500 };
+	const int defPosAtPlusDeg[6] = { 0, 690, 320, 680, 700, 900 };
+	const int defPlusDeg[6] = { 0, 45, 45, 45, 45, 90 };
+	for (int j = 1; j <= 5; j++)
+	{
+		CString sec;
+		sec.Format(L"Kinematics\\J%d", j);
+		ExportProfileInt(iniPath, sec, L"PosAt0Deg", defPosAt0Deg[j]);
+		ExportProfileInt(iniPath, sec, L"PosAtPlusDeg", defPosAtPlusDeg[j]);
+		ExportProfileInt(iniPath, sec, L"PlusDeg", defPlusDeg[j]);
+		ExportProfileInt(iniPath, sec, L"ZeroOffset_mdeg", 0);
+	}
+
+	// ===== Tool (camera/gripper offsets) =====
+	// 坐标：Cam（X右Y下Z前）
+	ExportProfileInt(iniPath, L"Tool\\Offsets", L"Joint5ToCam_X_mm", 0);
+	ExportProfileInt(iniPath, L"Tool\\Offsets", L"Joint5ToCam_Y_mm", -55);
+	ExportProfileInt(iniPath, L"Tool\\Offsets", L"Joint5ToCam_Z_mm", 0);
+	ExportProfileInt(iniPath, L"Tool\\Offsets", L"CamToGrip_X_mm", 0);
+	ExportProfileInt(iniPath, L"Tool\\Offsets", L"CamToGrip_Y_mm", 0);
+	ExportProfileInt(iniPath, L"Tool\\Offsets", L"CamToGrip_Z_mm", 40);
+
 	// ===== Vision (Visual compute) =====
 	// Mode: 0=Auto, 1=BrightestPoint, 2=Aruco, 3=ColorTrack, 4=Detector, 5=Hand
 	ExportProfileInt(iniPath, L"Vision", L"Mode", 0);
@@ -261,6 +294,65 @@ SettingsIo::Result SettingsIo::ImportFromIni(const std::wstring& iniPath)
 		AfxGetApp()->WriteProfileInt(sec, L"Max", maxV);
 		AfxGetApp()->WriteProfileInt(sec, L"Home", homeV);
 		AfxGetApp()->WriteProfileInt(sec, L"Invert", invert);
+	}
+
+	// ===== Kinematics =====
+	// Links (mm)
+	{
+		const wchar_t* sec = L"Kinematics\\Links";
+		auto writeInt = [&](const wchar_t* key, int fallback)
+		{
+			const int cur = AfxGetApp()->GetProfileInt(sec, key, fallback);
+			const int v = ReadIntW(iniPath, sec, key, cur);
+			AfxGetApp()->WriteProfileInt(sec, key, v);
+		};
+		writeInt(L"L_base_mm", 80);
+		writeInt(L"L_arm1_mm", 100);
+		writeInt(L"L_arm2_mm", 95);
+		writeInt(L"L_wrist_mm", 95);
+		writeInt(L"L_cam_mm", 55);
+	}
+
+	// Joint calib (J1..J5)
+	for (int j = 1; j <= 5; j++)
+	{
+		CString sec;
+		sec.Format(L"Kinematics\\J%d", j);
+
+		auto writeInt = [&](const wchar_t* key, int fallback)
+		{
+			const int cur = AfxGetApp()->GetProfileInt(sec, key, fallback);
+			const int v = ReadIntW(iniPath, sec, key, cur);
+			AfxGetApp()->WriteProfileInt(sec, key, v);
+		};
+
+		writeInt(L"PosAt0Deg", 500);
+		writeInt(L"PosAtPlusDeg", 500);
+		{
+			const int curPlus = AfxGetApp()->GetProfileInt(sec, L"PlusDeg", 45);
+			int plusDeg = ReadIntW(iniPath, sec, L"PlusDeg", curPlus);
+			if (plusDeg == 0) plusDeg = 45; // avoid divide-by-zero in kinematics mapping
+			AfxGetApp()->WriteProfileInt(sec, L"PlusDeg", plusDeg);
+		}
+		// milli-degree
+		writeInt(L"ZeroOffset_mdeg", 0);
+	}
+
+	// ===== Tool =====
+	{
+		const wchar_t* sec = L"Tool\\Offsets";
+		auto writeInt = [&](const wchar_t* key, int fallback)
+		{
+			const int cur = AfxGetApp()->GetProfileInt(sec, key, fallback);
+			const int v = ReadIntW(iniPath, sec, key, cur);
+			AfxGetApp()->WriteProfileInt(sec, key, v);
+		};
+		writeInt(L"Joint5ToCam_X_mm", 0);
+		writeInt(L"Joint5ToCam_Y_mm", -55);
+		writeInt(L"Joint5ToCam_Z_mm", 0);
+		writeInt(L"CamToGrip_X_mm", 0);
+		writeInt(L"CamToGrip_Y_mm", 0);
+		writeInt(L"CamToGrip_Z_mm", 40);
 	}
 
 	// ===== Vision =====

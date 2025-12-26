@@ -41,6 +41,12 @@ void VisualServoController::MapCamVelToBase(double vxCam, double vyCam, double v
 	outVzBase = -vyCam;
 }
 
+void VisualServoController::SetArmPose(const ArmPose& p)
+{
+	std::lock_guard<std::mutex> lk(m_mu);
+	m_armPose = p;
+}
+
 void VisualServoController::SetEnabled(bool on)
 {
 	m_enabled = on;
@@ -77,10 +83,12 @@ bool VisualServoController::ComputeOutput(VisualServoOutput& out) const
 
 	VisualObservation obs;
 	double advance = 0.0;
+	ArmPose armPose;
 	{
 		std::lock_guard<std::mutex> lk(m_mu);
 		obs = m_lastObs;
 		advance = m_advanceNorm;
+		armPose = m_armPose;
 	}
 
 	const ULONGLONG now = ::GetTickCount64();
@@ -187,6 +195,32 @@ bool VisualServoController::ComputeOutput(VisualServoOutput& out) const
 	// 4) Cam 速度 -> Base 速度（先用默认映射；未来可替换为外参矩阵）
 	double vxBase = 0.0, vyBase = 0.0, vzBase = 0.0;
 	MapCamVelToBase(vxCam, vyCam, vzCam, vxBase, vyBase, vzBase);
+
+	// 若提供了当前姿态，则做姿态相关的旋转修正：Rz(-yaw) * Rx(pitch)
+	// 注意：ArmKinematics 的 q1 定义为 atan2(x,y)，其正方向等价于绕 +Z 的“负向”旋转，
+	// 因此这里使用 -yaw 来得到右手系一致的旋转。
+	if (armPose.valid)
+	{
+		const double cy = std::cos(armPose.yawRad);
+		const double sy = std::sin(armPose.yawRad);
+		const double cp = std::cos(armPose.pitchRad);
+		const double sp = std::sin(armPose.pitchRad);
+
+		// v0: cam->base0 (pitch=0,yaw=0) 映射结果（上面 MapCamVelToBase 已给出）
+		const double v0x = vxBase;
+		const double v0y = vyBase;
+		const double v0z = vzBase;
+
+		// Rx(pitch) about +X_base
+		const double v1x = v0x;
+		const double v1y = v0y * cp - v0z * sp;
+		const double v1z = v0y * sp + v0z * cp;
+
+		// Rz(-yaw) about +Z_base
+		vxBase = v1x * cy + v1y * sy;
+		vyBase = -v1x * sy + v1y * cy;
+		vzBase = v1z;
+	}
 
 	// 5) Base 速度 -> Jog 归一化输入
 	const double sMax = std::max(1e-3, m_params.maxSpeedMmPerSec);

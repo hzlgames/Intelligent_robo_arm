@@ -43,7 +43,10 @@ public:
 
 	// TX queue
 	void ClearTxQueue();
+	void ClearMoveQueue();
 	void EnqueueTx(std::vector<uint8_t> bytes);
+	void EnqueueMove(std::vector<uint8_t> bytes);
+	void EnqueueRead(std::vector<uint8_t> bytes);
 	void EmergencyStop(); // clears queue; optional future: send hold position
 
 	// RX / readback
@@ -78,7 +81,10 @@ private:
 	FakeSerialPort m_fake;
 
 	// TX throttling + queue
-	std::deque<std::vector<uint8_t>> m_txQueue;
+	std::deque<std::vector<uint8_t>> m_txEStopQueue;
+	std::deque<std::vector<uint8_t>> m_txMoveQueue;
+	std::deque<std::vector<uint8_t>> m_txReadQueue;
+	std::deque<std::vector<uint8_t>> m_txOtherQueue;
 	DWORD m_lastTxTick = 0;
 
 	// RX parsing buffer

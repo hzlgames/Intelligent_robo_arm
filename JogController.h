@@ -77,6 +77,8 @@ private:
 	Params m_params;
 	InputState m_input;
 	ArmKinematics::PoseTarget m_target{};
+	ArmKinematics::PoseTarget m_lastGoodTarget{};
+	bool m_hasLastGoodTarget = false;
 
 	MotionController* m_pMotion = nullptr;
 	KinematicsConfig* m_pKc = nullptr;

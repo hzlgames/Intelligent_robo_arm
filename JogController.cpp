@@ -112,22 +112,43 @@ bool JogController::Tick(std::wstring& outWhy)
 	dz = ClampStep(dz, m_params.maxStepMm);
 	dp = ClampStep(dp, m_params.maxStepPitchDeg);
 
-	m_target.x_mm += dx;
-	m_target.y_mm += dy;
-	m_target.z_mm += dz;
-	m_target.pitch_deg += dp;
+	// 先缓存上一帧 target。IK 失败时必须回滚，避免 target 漂移到不可达区域导致“越失败越不可达”。
+	const auto prevTarget = m_target;
+	ArmKinematics::PoseTarget nextTarget = m_target;
+	nextTarget.x_mm += dx;
+	nextTarget.y_mm += dy;
+	nextTarget.z_mm += dz;
+	nextTarget.pitch_deg += dp;
 
 	// 读取当前关节角估算，用于 IK 择优
 	ArmKinematics::JointAnglesRad qCur;
 	BuildCurrentJointEstimate(m_pMotion->Config(), *m_pKc, qCur);
 
 	// IK
-	const auto ik = ArmKinematics::InverseKinematics(*m_pKc, &m_pMotion->Config(), m_target, &qCur);
+	const auto ik = ArmKinematics::InverseKinematics(*m_pKc, &m_pMotion->Config(), nextTarget, &qCur);
 	if (!ik.ok)
 	{
+		// IK 失败：回滚/恢复到上一次可达位置，避免 target 漂移导致持续失败。
+		m_target = m_hasLastGoodTarget ? m_lastGoodTarget : prevTarget;
 		outWhy = ik.reason.empty() ? L"IK 失败。" : ik.reason;
 		return false;
 	}
+
+	// 软限位一致性：若最佳解超出软限位，则本次视为失败并回滚。
+	// 否则下发阶段会被 MotionController clamp，导致“看起来在动但实际被裁剪”，闭环会持续积累误差。
+	if (ik.chosenIndex >= 0 &&
+	    ik.chosenIndex < (int)ik.candidates.size() &&
+	    !ik.candidates[ik.chosenIndex].withinLimits)
+	{
+		m_target = m_hasLastGoodTarget ? m_lastGoodTarget : prevTarget;
+		outWhy = ik.reason.empty() ? L"软限位抑制：目标超出关节限位范围。" : ik.reason;
+		return false;
+	}
+
+	// 只有 IK 成功才提交本次 target
+	m_target = nextTarget;
+	m_lastGoodTarget = m_target;
+	m_hasLastGoodTarget = true;
 
 	// 关节角 -> 舵机位置
 	ArmKinematics::ServoPos sp;
@@ -138,8 +159,8 @@ bool JogController::Tick(std::wstring& outWhy)
 		return false;
 	}
 
-	// “最新指令优先”：清理旧队列后再发（避免积压造成延迟）
-	ArmCommsService::Instance().ClearTxQueue();
+	// “最新指令优先”：只清理 Move 队列，避免误清读回/脚本/其他指令
+	ArmCommsService::Instance().ClearMoveQueue();
 
 	std::vector<std::pair<int, int>> jointToPos;
 	jointToPos.reserve(ArmKinematics::kJointCount);

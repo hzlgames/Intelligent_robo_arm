@@ -68,6 +68,27 @@ namespace VisionGeometry
 		outPlane.d = -(outPlane.nx * t[0] + outPlane.ny * t[1] + outPlane.nz * t[2]);
 		return true;
 	}
+
+	bool MapCamVectorToBase_YawPitch(double yawRad, double pitchRad, const Point3& vCam, Point3& outVBase)
+	{
+		// Step0: cam->base0 (yaw=0,pitch=0) 固定映射
+		Point3 v0 = MapCamPointToBase_Default(vCam);
+
+		// Step1: Rx(pitch) about +X_base
+		const double cp = std::cos(pitchRad);
+		const double sp = std::sin(pitchRad);
+		const double v1x = v0.x;
+		const double v1y = v0.y * cp - v0.z * sp;
+		const double v1z = v0.y * sp + v0.z * cp;
+
+		// Step2: Rz(-yaw) about +Z_base（见 VisualServoController 注释）
+		const double cy = std::cos(yawRad);
+		const double sy = std::sin(yawRad);
+		outVBase.x = v1x * cy + v1y * sy;
+		outVBase.y = -v1x * sy + v1y * cy;
+		outVBase.z = v1z;
+		return true;
+	}
 }
 
 

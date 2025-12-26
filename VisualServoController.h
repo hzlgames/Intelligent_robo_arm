@@ -35,6 +35,16 @@ enum class VisualServoMode
 class VisualServoController
 {
 public:
+	struct ArmPose
+	{
+		// 由 ArmStateEstimator 提供（读回优先，homePos fallback）
+		// yaw: J1（与 ArmKinematics 的 q1 定义一致）
+		// pitch: q2+q3+q4（与 ArmKinematics::PoseTarget::pitch_deg 定义一致，单位 rad）
+		bool valid = false;
+		double yawRad = 0.0;
+		double pitchRad = 0.0;
+	};
+
 	struct Params
 	{
 		// 输出更新：允许观测的最大延迟（ms）。超过则输出 inactive。
@@ -84,6 +94,11 @@ public:
 	void SetCameraIntrinsics(const CameraIntrinsics& k) { m_K = k; }
 	CameraIntrinsics GetCameraIntrinsics() const { return m_K; }
 
+	// 注入当前机械臂姿态（用于姿态相关的 Cam->Base 变换）。
+	// 若未提供/invalid，则退化为固定映射（兼容旧行为）。
+	void SetArmPose(const ArmPose& p);
+	ArmPose GetArmPose() const { return m_armPose; }
+
 	// 视觉线程/主线程都可以调用（内部加锁）
 	void UpdateObservation(const VisualObservation& obs);
 
@@ -116,6 +131,7 @@ private:
 	VisualServoMode m_mode = VisualServoMode::LookAndMove;
 	Params m_params{};
 	CameraIntrinsics m_K{};
+	ArmPose m_armPose{};
 
 	mutable std::mutex m_mu;
 	VisualObservation m_lastObs{};

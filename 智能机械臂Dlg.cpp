@@ -11,6 +11,7 @@
 #include "SettingsIo.h"
 #include "AppMessages.h"
 #include "ArmCommsService.h"
+#include "ArmStateEstimator.h"
 #include "Resource.h"
 #include "KinematicsOverlayService.h"
 
@@ -1122,6 +1123,17 @@ void C智能机械臂Dlg::OnTimer(UINT_PTR nIDEvent)
 			vp.maxPitchDegPerSec = p.pitchDegPerSec;
 			vp.raySpeedMmPerSec = std::max(10.0, p.speedMmPerSec); // 沿指向推进速度默认跟随线速度
 			m_vs.SetParams(vp);
+		}
+
+		// Arm pose：用于姿态相关的 Cam->Base 变换（沿视线推进/射线运动在不同姿态下仍保持方向一致）
+		{
+			ArmStateEstimator::ArmState st{};
+			(void)ArmStateEstimator::Estimate(m_motion, m_kc, st, nullptr);
+			VisualServoController::ArmPose ap{};
+			ap.valid = st.valid;
+			ap.yawRad = st.yawRad;
+			ap.pitchRad = st.pitchRad;
+			m_vs.SetArmPose(ap);
 		}
 
 		// Advance command: [-1,1]

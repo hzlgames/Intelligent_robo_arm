@@ -79,7 +79,7 @@ bool MotionController::MoveJointsAbs(const std::vector<std::pair<int, int>>& joi
 	}
 	if (timeMs < 0) timeMs = 0;
 	if (timeMs > 60000) timeMs = 60000;
-	ArmCommsService::Instance().EnqueueTx(ArmProtocol::PackMove(servos, static_cast<uint16_t>(timeMs)));
+	ArmCommsService::Instance().EnqueueMove(ArmProtocol::PackMove(servos, static_cast<uint16_t>(timeMs)));
 	return true;
 }
 
@@ -114,7 +114,7 @@ void MotionController::RequestReadAllAssigned()
 		// fallback: request 1..6
 		ids = { 1,2,3,4,5,6 };
 	}
-	ArmCommsService::Instance().EnqueueTx(ArmProtocol::PackReadPosition(ids));
+	ArmCommsService::Instance().EnqueueRead(ArmProtocol::PackReadPosition(ids));
 }
 
 void MotionController::StartScript(std::vector<Keyframe> frames, bool loop)
