@@ -3,6 +3,7 @@
 #include "ArmKinematics.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cmath>
 #include <limits>
 
@@ -52,7 +53,8 @@ bool ArmKinematics::ServoPosToJointRad(const KinematicsConfig& kc,
 	if (std::fabs(posPerDeg) < kEps) return false;
 
 	// 由舵机位置反解“物理角度（度）”
-	const double degPhysical = (static_cast<double>(pos - c.posAt0Deg) / posPerDeg);
+	double degPhysical = (static_cast<double>(pos - c.posAt0Deg) / posPerDeg);
+	if (c.physicalInvert) degPhysical = -degPhysical;
 	const double degZeroAdjusted = degPhysical - c.zeroOffsetDeg;
 
 	// 轴向符号 +（可选）MotionConfig::invert 叠加修正
@@ -78,7 +80,8 @@ bool ArmKinematics::JointRadToServoPos(const KinematicsConfig& kc,
 	int sign = KinematicsConfig::AxisSignForJoint(nJoint);
 	if (pMc && pMc->Get(nJoint).invert) sign = -sign;
 	const double degZeroAdjusted = RadToDeg(qRad) / static_cast<double>(sign);
-	const double degPhysical = degZeroAdjusted + c.zeroOffsetDeg;
+	double degPhysical = degZeroAdjusted + c.zeroOffsetDeg;
+	if (c.physicalInvert) degPhysical = -degPhysical;
 
 	const double posF = static_cast<double>(c.posAt0Deg) + degPhysical * posPerDeg;
 	int pos = static_cast<int>(std::lround(posF));
@@ -283,44 +286,34 @@ ArmKinematics::IkResult ArmKinematics::InverseKinematics(const KinematicsConfig&
 	};
 
 	r.candidates.clear();
-	r.candidates.reserve(2);
-	r.candidates.push_back(solveQ2Q4(q3a));
-	r.candidates.push_back(solveQ2Q4(q3b));
+	// 5) 强制 Elbow-Up：
+	// 数学上两支解通常成对存在，但工程上我们强制使用“肘部更高”的那支，以避免瞬时构型切换。
+	IkSolution candA = solveQ2Q4(q3a);
+	IkSolution candB = solveQ2Q4(q3b);
 
-	// 5) 择优：优先 withinLimits，其次 cost 最小
-	int best = -1;
-	double bestScore = std::numeric_limits<double>::infinity();
-	for (int i = 0; i < (int)r.candidates.size(); i++)
-	{
-		const auto& s = r.candidates[i];
-		// withinLimits 作为硬优先级：超限给一个很大惩罚，但仍保留以便用户看到候选
-		const double penalty = s.withinLimits ? 0.0 : 1e6;
-		const double score = penalty + s.cost;
-		if (score < bestScore)
-		{
-			bestScore = score;
-			best = i;
-		}
-	}
+	const double zElA = L.L_base + L.L_arm1 * std::sin(candA.q.q[2]); // elbow after J2
+	const double zElB = L.L_base + L.L_arm1 * std::sin(candB.q.q[2]);
 
-	r.chosenIndex = best;
-	if (best >= 0)
+	const bool pickA = (zElA >= zElB);
+	const IkSolution elbowUp = pickA ? candA : candB;
+
+	r.candidates.reserve(1);
+	r.candidates.push_back(elbowUp);
+
+	r.chosenIndex = 0;
+	r.chosenQ = elbowUp.q;
+	r.ok = true;
+
+	if (!elbowUp.withinLimits)
 	{
-		r.chosenQ = r.candidates[best].q;
-		r.ok = true;
-		if (!r.candidates[best].withinLimits)
-		{
-			// 仍然返回 ok=true 方便上层展示，但给出原因（上层可选择拒绝发送）
-			r.reason = L"存在可达解，但该解可能超出软限位范围。";
-		}
-	}
-	else
-	{
-		r.ok = false;
-		r.reason = L"未找到有效解。";
+		// 仍然返回 ok=true 方便上层展示，但给出原因（上层可选择拒绝发送）
+		r.reason = L"存在 Elbow-Up 可达解，但该解可能超出软限位范围。";
 	}
 	return r;
 }
+
+
+
 
 
 

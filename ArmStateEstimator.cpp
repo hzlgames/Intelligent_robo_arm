@@ -30,9 +30,23 @@ bool ArmStateEstimator::Estimate(const MotionController& motion,
 		if (jc.servoId >= 1 && jc.servoId <= 6)
 		{
 			uint16_t rb = 0;
-			if (ArmCommsService::Instance().GetLastReadPos((uint8_t)jc.servoId, rb))
+			DWORD age = 0;
+			const DWORD staleMs = (DWORD)AfxGetApp()->GetProfileInt(L"Readback", L"StaleMs", 800);
+			if (ArmCommsService::Instance().GetLastReadPosEx((uint8_t)jc.servoId, rb, age) && age <= staleMs)
 			{
 				pos = (int)rb;
+			}
+			else
+			{
+				// 连接状态下：读回过期/缺失时直接标记 invalid，避免 VS 使用“homePos推算的姿态”导致几何方向突变
+				if (ArmCommsService::Instance().IsConnected())
+				{
+					ok = false;
+					if (why.empty())
+					{
+						why = L"读回过期/缺失：为避免姿态估计突变，暂不提供有效姿态（valid=false）。";
+					}
+				}
 			}
 		}
 

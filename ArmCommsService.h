@@ -51,6 +51,10 @@ public:
 
 	// RX / readback
 	bool GetLastReadPos(uint8_t id, uint16_t& outPos) const;
+	// 获取读回位置 + 新鲜度（ageMs）
+	// - ageMs=0 表示“刚更新”
+	// - 若无有效读回，返回 false
+	bool GetLastReadPosEx(uint8_t id, uint16_t& outPos, DWORD& outAgeMs) const;
 	void ClearReadback();
 
 	// Listeners (caller must remove on destroy)
@@ -93,6 +97,10 @@ private:
 	// Readback cache (ids 1..6)
 	uint16_t m_lastReadPos[7] = { 0 };
 	bool m_lastReadValid[7] = { false };
+	DWORD m_lastReadTick[7] = { 0 }; // GetTickCount() 时间戳：用于计算 ageMs
+
+	// 读回发送保障：记录最近一次发送 Read 帧的时间，避免被 Move 长期饿死
+	DWORD m_lastReadSentTick = 0;
 
 	struct LogSub { int id; LogListener cb; };
 	struct FrameSub { int id; FrameListener cb; };

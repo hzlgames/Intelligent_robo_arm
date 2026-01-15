@@ -15,6 +15,7 @@ void MotionConfig::ResetDefaults()
 	{
 		m_joints[j] = Joint{};
 	}
+	// 缺省设置：invert 默认关闭。若某关节方向与期望相反，请在“诊断->运动(Motion)”中勾选 Invert 并保存。
 }
 
 std::wstring MotionConfig::SectionForJoint(int jointIndex)
@@ -48,7 +49,9 @@ void MotionConfig::LoadAll()
 		d.minPos = AfxGetApp()->GetProfileInt(sec.c_str(), L"Min", 0);
 		d.maxPos = AfxGetApp()->GetProfileInt(sec.c_str(), L"Max", 1000);
 		d.homePos = AfxGetApp()->GetProfileInt(sec.c_str(), L"Home", 500);
-		d.invert = (AfxGetApp()->GetProfileInt(sec.c_str(), L"Invert", 0) != 0);
+		// 默认 invert=0；需要翻转时由用户在诊断页显式勾选并保存
+		const int invertDefault = 0;
+		d.invert = (AfxGetApp()->GetProfileInt(sec.c_str(), L"Invert", invertDefault) != 0);
 		m_joints[j] = d;
 	}
 }

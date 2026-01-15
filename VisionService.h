@@ -62,6 +62,15 @@ public:
 		// ===== 指向选物（仅颜色反馈，不联动）=====
 		// 逻辑：Point(只伸食指) -> 在指向附近找物体 -> 指向同一物体连续 hold>=3s 锁定 -> Pinch hold>=3s 确认 -> OpenPalm hold>=3s 取消
 		bool pointPickEnabled = true;
+		// PointPick 目标类型：
+		// - 0：Detector 物体候选（从 Detector 检测框中选择，符合“只允许 Detector 候选”）
+		// - 1：红点候选（从 HSV 红色 blob 生成候选框，用于“终点红点”手势锁定）
+		int pointPickTarget = 0;
+		// 是否禁止“边缘/轮廓”兜底候选（true=只允许 Detector 候选）
+		bool pointPickDetectorOnly = true;
+		// 运行期重置序号：每次 +1 会强制清空 PointPick FSM（用于“锁定后进入下一阶段，再次锁定”）
+		// 注意：这是运行期字段，通常不需要写入 ini。
+		int pointPickResetSeq = 0;
 		int pointPickMaxRayLenPx = 320;     // 指向“前方”最大距离（像素）
 		int pointPickMaxRayPerpPx = 90;     // 到指向射线的最大垂距（像素）
 		int pointPickMaxRadiusPx = 140;     // fallback：若射线匹配不到，允许在指尖附近的搜索半径
@@ -97,13 +106,23 @@ public:
 		bool hasDepthMm = false;
 		double depthMm = 0.0;
 
-		// Detector bbox（若本帧来自 Detector）
+		// TrackBox（优先：Detector bbox；否则为当前模式的跟踪框，例如 ArUco/ColorTrack/HandLandmarks 等）
+		// 说明：用于“无深度时用框大小估距”等上层逻辑；classId 仅在 Detector 时有效。
 		bool hasBox = false;
 		int boxX = 0;
 		int boxY = 0;
 		int boxW = 0;
 		int boxH = 0;
 		int classId = -1;
+
+		// ===== PointPick（手势选物/选红点）的“实际输出”=====
+		// state: 0=None,1=Searching,2=Locked,3=Confirmed,4=Cancelled
+		int pickState = 0;
+		bool hasPickBox = false;
+		int pickBoxX = 0;
+		int pickBoxY = 0;
+		int pickBoxW = 0;
+		int pickBoxH = 0;
 	};
 
 public:

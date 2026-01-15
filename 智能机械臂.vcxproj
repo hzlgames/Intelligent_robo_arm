@@ -33,6 +33,12 @@
       你可以按需改到其它纯英文目录（例如 C:\vcpkg_installed\）。
     -->
     <VcpkgInstalledDir>$(USERPROFILE)\vcpkg_installed\</VcpkgInstalledDir>
+
+    <!-- vcpkg AppLocal 部署：
+         之前启用内置 z-applocal 有“构建成功但缺 DLL”的不稳定情况（运行时报 opencv_*.dll 找不到）。
+         这里禁用 vcpkg 的 applocal，改用我们自己的 PostBuild 复制（见下方 PostBuildEvent），保证输出目录稳定可运行。 -->
+    <VcpkgApplocalDeps>false</VcpkgApplocalDeps>
+    <VcpkgXUseBuiltInApplocalDeps>false</VcpkgXUseBuiltInApplocalDeps>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
@@ -119,6 +125,10 @@
       <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ResourceCompile>
+    <PostBuildEvent>
+      <!-- 关键：确保运行目录包含 vcpkg 的 DLL（否则重启后会报 opencv_*.dll 找不到，程序无法启动） -->
+      <Command>if /I "$(Configuration)"=="Debug" (xcopy /Y /D /Q "$(VcpkgInstalledDir)$(VcpkgTriplet)\debug\bin\*.dll" "$(TargetDir)" &gt;nul) else (xcopy /Y /D /Q "$(VcpkgInstalledDir)$(VcpkgTriplet)\bin\*.dll" "$(TargetDir)" &gt;nul)</Command>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
@@ -143,6 +153,9 @@
       <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ResourceCompile>
+    <PostBuildEvent>
+      <Command>if /I "$(Configuration)"=="Debug" (xcopy /Y /D /Q "$(VcpkgInstalledDir)$(VcpkgTriplet)\debug\bin\*.dll" "$(TargetDir)" &gt;nul) else (xcopy /Y /D /Q "$(VcpkgInstalledDir)$(VcpkgTriplet)\bin\*.dll" "$(TargetDir)" &gt;nul)</Command>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
@@ -171,6 +184,9 @@
       <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ResourceCompile>
+    <PostBuildEvent>
+      <Command>if /I "$(Configuration)"=="Debug" (xcopy /Y /D /Q "$(VcpkgInstalledDir)$(VcpkgTriplet)\debug\bin\*.dll" "$(TargetDir)" &gt;nul) else (xcopy /Y /D /Q "$(VcpkgInstalledDir)$(VcpkgTriplet)\bin\*.dll" "$(TargetDir)" &gt;nul)</Command>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
@@ -199,6 +215,9 @@
       <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ResourceCompile>
+    <PostBuildEvent>
+      <Command>if /I "$(Configuration)"=="Debug" (xcopy /Y /D /Q "$(VcpkgInstalledDir)$(VcpkgTriplet)\debug\bin\*.dll" "$(TargetDir)" &gt;nul) else (xcopy /Y /D /Q "$(VcpkgInstalledDir)$(VcpkgTriplet)\bin\*.dll" "$(TargetDir)" &gt;nul)</Command>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="AppMessages.h" />
@@ -207,9 +226,13 @@
     <ClInclude Include="ArmProtocol.h" />
     <ClInclude Include="ArmKinematics.h" />
     <ClInclude Include="ArmStateEstimator.h" />
+    <ClInclude Include="KinematicsDiagPage.h" />
+    <ClInclude Include="KinTestDiagPage.h" />
     <ClInclude Include="ToolConfig.h" />
     <ClInclude Include="ToolGeometry.h" />
     <ClInclude Include="SeeAndFetchStateMachine.h" />
+    <ClInclude Include="SeeAndFetchJointPolicy.h" />
+    <ClInclude Include="SeeAndFetchDiagPage.h" />
     <ClInclude Include="BufferLock.h" />
     <ClInclude Include="CameraDiagPage.h" />
     <ClInclude Include="ControlDiagPage.h" />
@@ -246,9 +269,13 @@
     <ClCompile Include="ArmKinematics.cpp" />
     <ClCompile Include="ArmProtocol.cpp" />
     <ClCompile Include="ArmStateEstimator.cpp" />
+    <ClCompile Include="KinematicsDiagPage.cpp" />
+    <ClCompile Include="KinTestDiagPage.cpp" />
     <ClCompile Include="ToolConfig.cpp" />
     <ClCompile Include="ToolGeometry.cpp" />
     <ClCompile Include="SeeAndFetchStateMachine.cpp" />
+    <ClCompile Include="SeeAndFetchJointPolicy.cpp" />
+    <ClCompile Include="SeeAndFetchDiagPage.cpp" />
     <ClCompile Include="CameraDiagPage.cpp" />
     <ClCompile Include="ControlDiagPage.cpp" />
     <ClCompile Include="device.cpp" />

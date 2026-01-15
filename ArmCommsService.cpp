@@ -5,6 +5,7 @@
 #include "ArmProtocol.h"
 
 #include <algorithm>
+#include <vector>
 
 namespace
 {
@@ -127,9 +128,23 @@ void ArmCommsService::EmergencyStop()
 
 bool ArmCommsService::GetLastReadPos(uint8_t id, uint16_t& outPos) const
 {
+	DWORD age = 0;
+	return GetLastReadPosEx(id, outPos, age);
+}
+
+bool ArmCommsService::GetLastReadPosEx(uint8_t id, uint16_t& outPos, DWORD& outAgeMs) const
+{
+	outAgeMs = 0;
 	if (id < 1 || id > 6) return false;
 	if (!m_lastReadValid[id]) return false;
 	outPos = m_lastReadPos[id];
+	const DWORD t = m_lastReadTick[id];
+	if (t == 0)
+	{
+		outAgeMs = 0;
+		return true;
+	}
+	outAgeMs = ::GetTickCount() - t;
 	return true;
 }
 
@@ -139,6 +154,7 @@ void ArmCommsService::ClearReadback()
 	{
 		m_lastReadPos[i] = 0;
 		m_lastReadValid[i] = false;
+		m_lastReadTick[i] = 0;
 	}
 }
 
@@ -202,12 +218,23 @@ void ArmCommsService::PumpTx()
 		return;
 	}
 
-	// Priority: EStop > Move > Read > Other
+	// Priority: EStop > (Read fairness) > Move > Read > Other
+	// 说明：Jog 场景下 Move 会非常频繁，如果 Read 永远排在 Move 后面，会出现“读回长期不新鲜”。
+	// 我们保证在 Read 队列非空时，每隔一段时间至少发送一次 Read。
+	const int readGuaranteeMs = AfxGetApp()->GetProfileInt(L"Throttle", L"ReadGuaranteeMs", 200);
+	const bool preferRead = !m_txReadQueue.empty() && (m_lastReadSentTick == 0 || (now - m_lastReadSentTick) >= (DWORD)readGuaranteeMs);
+
 	std::vector<uint8_t> bytes;
 	if (!m_txEStopQueue.empty())
 	{
 		bytes = std::move(m_txEStopQueue.front());
 		m_txEStopQueue.pop_front();
+	}
+	else if (preferRead)
+	{
+		bytes = std::move(m_txReadQueue.front());
+		m_txReadQueue.pop_front();
+		m_lastReadSentTick = now;
 	}
 	else if (!m_txMoveQueue.empty())
 	{
@@ -218,6 +245,7 @@ void ArmCommsService::PumpTx()
 	{
 		bytes = std::move(m_txReadQueue.front());
 		m_txReadQueue.pop_front();
+		m_lastReadSentTick = now;
 	}
 	else
 	{
@@ -317,12 +345,24 @@ void ArmCommsService::PollRx()
 
 		if (f.cmd == ArmProtocol::Command::ReadPosition && f.isReadResponse)
 		{
+			const DWORD rxTick = ::GetTickCount();
 			for (const auto& s : f.servos)
 			{
 				if (s.id >= 1 && s.id <= 6)
 				{
-					m_lastReadPos[s.id] = s.position;
-					m_lastReadValid[s.id] = true;
+					// [关键保护] 读回位置必须在合理范围内（协议约定 0..1000）。
+					// 你复现的“首次操作瞬移”证据中出现了 pos=65485（明显是脏数据/解析噪声/设备返回异常），
+					// 若直接写入缓存，会导致上层 FK/IK 以极端关节角为起点，从而触发猛烈跳变。
+					if (s.position <= 1000)
+					{
+						m_lastReadPos[s.id] = s.position;
+						m_lastReadValid[s.id] = true;
+						m_lastReadTick[s.id] = rxTick;
+					}
+					else
+					{
+						// 不更新缓存：保留历史有效值（若没有历史值则依旧 invalid）
+					}
 				}
 			}
 		}

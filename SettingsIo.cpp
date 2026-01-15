@@ -11,7 +11,7 @@
 namespace
 {
 	// INI schema version (bump if keys/sections change).
-	constexpr int kIniVersion = 3;
+	constexpr int kIniVersion = 4;
 
 	bool WriteStringW(const std::wstring& iniPath, const wchar_t* section, const wchar_t* key, const std::wstring& value)
 	{
@@ -153,6 +153,13 @@ SettingsIo::Result SettingsIo::ExportToIni(const std::wstring& iniPath)
 	ExportProfileInt(iniPath, L"Kinematics\\Links", L"L_wrist_mm", 95);
 	ExportProfileInt(iniPath, L"Kinematics\\Links", L"L_cam_mm", 55);
 
+	// Safety (FPS constraints)
+	ExportProfileInt(iniPath, L"Kinematics\\Safety", L"PitchMinDeg", -90);
+	ExportProfileInt(iniPath, L"Kinematics\\Safety", L"PitchMaxDeg", 90);
+	ExportProfileInt(iniPath, L"Kinematics\\Safety", L"ZMinMm", 20);
+	ExportProfileInt(iniPath, L"Kinematics\\Safety", L"RMinMm", 30);
+	ExportProfileInt(iniPath, L"Kinematics\\Safety", L"RMaxMm", 290);
+
 	// Joint calib (J1..J5): two-point calibration + zero offset (milli-degree)
 	// Defaults align with current Reference/mechanics.md sample values (can be overridden by profile/ini).
 	const int defPosAt0Deg[6] = { 0, 500, 500, 500, 500, 500 };
@@ -166,6 +173,8 @@ SettingsIo::Result SettingsIo::ExportToIni(const std::wstring& iniPath)
 		ExportProfileInt(iniPath, sec, L"PosAtPlusDeg", defPosAtPlusDeg[j]);
 		ExportProfileInt(iniPath, sec, L"PlusDeg", defPlusDeg[j]);
 		ExportProfileInt(iniPath, sec, L"ZeroOffset_mdeg", 0);
+		// Physical angle inversion (0/1)
+		ExportProfileInt(iniPath, sec, L"PhysicalInvert", 0);
 	}
 
 	// ===== Tool (camera/gripper offsets) =====
@@ -224,6 +233,76 @@ SettingsIo::Result SettingsIo::ExportToIni(const std::wstring& iniPath)
 	ExportProfileString(iniPath, L"Vision\\Hand", L"PalmOnnxPath", L"");
 	ExportProfileString(iniPath, L"Vision\\Hand", L"LandmarkOnnxPath", L"");
 	ExportProfileInt(iniPath, L"Vision\\Hand", L"PinchThreshNorm_milli", 250); // 0..1000
+
+	// ===== SeeAndFetch (auto vision tracking/grasp/place state machine) =====
+	// Global
+	ExportProfileInt(iniPath, L"SeeAndFetch", L"PreferArucoDuringAuto", 1);
+	ExportProfileInt(iniPath, L"SeeAndFetch", L"LostFramesToAbort", 10);
+	ExportProfileInt(iniPath, L"SeeAndFetch", L"AcquireStableFrames", 5);
+	ExportProfileInt(iniPath, L"SeeAndFetch", L"EnablePlaneCache", 1);
+	// Timing
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Timing", L"MinCommandIntervalMs", 120);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Timing", L"DefaultMoveTimeMs", 220);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Timing", L"LockAfterMoveMs", 240);
+	// Find
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Find", L"DeadbandPx", 10);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Find", L"StableCenterFrames", 3);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Find", L"Yaw_kDegPerPx_milli", 30);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Find", L"Yaw_MinStepDeg_milli", 600);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Find", L"Yaw_MaxStepDeg_milli", 3500);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Find", L"Pitch_kDegPerPx_milli", 30);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Find", L"Pitch_MinStepDeg_milli", 600);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Find", L"Pitch_MaxStepDeg_milli", 3500);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Find", L"J4PreferAbsDeg_milli", 35000);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Find", L"SignJ1FromErrU", +1);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Find", L"SignJ4FromErrV", +1);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Find", L"SignJ3FromErrV", +1);
+	// Approach
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Approach", L"GraspDepthMm", 160);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Approach", L"DepthStableFrames", 3);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Approach", L"DepthMaxJumpMm", 40);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Approach", L"RangeMode", 0); // 0=ArucoDepth,1=BboxArea,2=Auto
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Approach", L"GraspBoxAreaPx2", 30000);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Approach", L"GraspBoxScale_milli", 0);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Approach", L"BoxStableFrames", 3);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Approach", L"BoxAreaMaxJumpPx2", 20000);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Approach", L"BboxRequireDetector", 1);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Approach", L"MaxAdvanceSteps", 60);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Approach", L"MaxAttempts", 3);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Approach", L"RetryRetreatSteps", 8);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Approach", L"J2AdvanceStepDeg_milli", 2000);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Approach", L"SignJ2Advance", +1);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Approach", L"EnableJ1FineTune", 1);
+	// Gripper
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Gripper", L"JointIndex", 6);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Gripper", L"OpenPos", 650);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Gripper", L"ClosePos", 350);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Gripper", L"CloseStepPos", 25);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Gripper", L"CloseMoveTimeMs", 450);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Gripper", L"MaxCloseSteps", 12);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Gripper", L"EnableStallDetect", 0);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Gripper", L"StallDetectDeltaPos", 10);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Gripper", L"StallDetectMaxAgeMs", 800);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Gripper", L"MaxAttempts", 2);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Gripper", L"AdvanceStepsOnFail", 1);
+	// Place / Return
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Place", L"Mode", 0); // 0=SimpleOpen,1=RedDotVisual
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Place", L"VisionMode", 3); // default ColorTrack
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Place", L"CenterStableFrames", 3);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Place", L"RangeMode", 1); // 0=ArucoDepth,1=BboxArea,2=Auto
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Place", L"PlaceDepthMm", 180);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Place", L"PlaceBoxAreaPx2", 24000);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Place", L"PlaceBoxScale_milli", 0);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Place", L"BoxStableFrames", 3);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Place", L"BoxAreaMaxJumpPx2", 20000);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Place", L"MaxDownSteps", 30);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Place", L"J2DownStepDeg_milli", 2000);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Place", L"SignJ2Down", +1);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Place", L"MaxAttempts", 2);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Place", L"RetryRetreatSteps", 8);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Place", L"RetreatSteps", 6);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Return", L"ReturnToStartPose", 1);
+	ExportProfileInt(iniPath, L"SeeAndFetch\\Return", L"ReturnTimeMs", 1200);
 
 	r.ok = true;
 	return r;
@@ -313,6 +392,22 @@ SettingsIo::Result SettingsIo::ImportFromIni(const std::wstring& iniPath)
 		writeInt(L"L_cam_mm", 55);
 	}
 
+	// Safety
+	{
+		const wchar_t* sec = L"Kinematics\\Safety";
+		auto writeInt = [&](const wchar_t* key, int fallback)
+		{
+			const int cur = AfxGetApp()->GetProfileInt(sec, key, fallback);
+			const int v = ReadIntW(iniPath, sec, key, cur);
+			AfxGetApp()->WriteProfileInt(sec, key, v);
+		};
+		writeInt(L"PitchMinDeg", -90);
+		writeInt(L"PitchMaxDeg", 90);
+		writeInt(L"ZMinMm", 20);
+		writeInt(L"RMinMm", 30);
+		writeInt(L"RMaxMm", 290);
+	}
+
 	// Joint calib (J1..J5)
 	for (int j = 1; j <= 5; j++)
 	{
@@ -336,6 +431,8 @@ SettingsIo::Result SettingsIo::ImportFromIni(const std::wstring& iniPath)
 		}
 		// milli-degree
 		writeInt(L"ZeroOffset_mdeg", 0);
+		// PhysicalInvert (0/1)
+		writeInt(L"PhysicalInvert", 0);
 	}
 
 	// ===== Tool =====
@@ -390,6 +487,75 @@ SettingsIo::Result SettingsIo::ImportFromIni(const std::wstring& iniPath)
 	ImportProfileString(iniPath, L"Vision\\Hand", L"PalmOnnxPath", L"");
 	ImportProfileString(iniPath, L"Vision\\Hand", L"LandmarkOnnxPath", L"");
 	ImportProfileInt(iniPath, L"Vision\\Hand", L"PinchThreshNorm_milli", 250);
+
+	// ===== SeeAndFetch =====
+	ImportProfileInt(iniPath, L"SeeAndFetch", L"PreferArucoDuringAuto", 1);
+	ImportProfileInt(iniPath, L"SeeAndFetch", L"LostFramesToAbort", 10);
+	ImportProfileInt(iniPath, L"SeeAndFetch", L"AcquireStableFrames", 5);
+	ImportProfileInt(iniPath, L"SeeAndFetch", L"EnablePlaneCache", 1);
+	// Timing
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Timing", L"MinCommandIntervalMs", 120);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Timing", L"DefaultMoveTimeMs", 220);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Timing", L"LockAfterMoveMs", 240);
+	// Find
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Find", L"DeadbandPx", 10);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Find", L"StableCenterFrames", 3);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Find", L"Yaw_kDegPerPx_milli", 30);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Find", L"Yaw_MinStepDeg_milli", 600);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Find", L"Yaw_MaxStepDeg_milli", 3500);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Find", L"Pitch_kDegPerPx_milli", 30);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Find", L"Pitch_MinStepDeg_milli", 600);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Find", L"Pitch_MaxStepDeg_milli", 3500);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Find", L"J4PreferAbsDeg_milli", 35000);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Find", L"SignJ1FromErrU", +1);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Find", L"SignJ4FromErrV", +1);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Find", L"SignJ3FromErrV", +1);
+	// Approach
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Approach", L"GraspDepthMm", 160);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Approach", L"DepthStableFrames", 3);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Approach", L"DepthMaxJumpMm", 40);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Approach", L"RangeMode", 0);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Approach", L"GraspBoxAreaPx2", 30000);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Approach", L"GraspBoxScale_milli", 0);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Approach", L"BoxStableFrames", 3);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Approach", L"BoxAreaMaxJumpPx2", 20000);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Approach", L"BboxRequireDetector", 1);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Approach", L"MaxAdvanceSteps", 60);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Approach", L"MaxAttempts", 3);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Approach", L"RetryRetreatSteps", 8);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Approach", L"J2AdvanceStepDeg_milli", 2000);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Approach", L"SignJ2Advance", +1);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Approach", L"EnableJ1FineTune", 1);
+	// Gripper
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Gripper", L"JointIndex", 6);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Gripper", L"OpenPos", 650);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Gripper", L"ClosePos", 350);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Gripper", L"CloseStepPos", 25);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Gripper", L"CloseMoveTimeMs", 450);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Gripper", L"MaxCloseSteps", 12);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Gripper", L"EnableStallDetect", 0);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Gripper", L"StallDetectDeltaPos", 10);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Gripper", L"StallDetectMaxAgeMs", 800);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Gripper", L"MaxAttempts", 2);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Gripper", L"AdvanceStepsOnFail", 1);
+	// Place / Return
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Place", L"Mode", 0);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Place", L"VisionMode", 3);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Place", L"CenterStableFrames", 3);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Place", L"RangeMode", 1);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Place", L"PlaceDepthMm", 180);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Place", L"PlaceBoxAreaPx2", 24000);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Place", L"PlaceBoxScale_milli", 0);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Place", L"BoxStableFrames", 3);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Place", L"BoxAreaMaxJumpPx2", 20000);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Place", L"MaxDownSteps", 30);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Place", L"J2DownStepDeg_milli", 2000);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Place", L"SignJ2Down", +1);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Place", L"MaxAttempts", 2);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Place", L"RetryRetreatSteps", 8);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Place", L"RetreatSteps", 6);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Return", L"ReturnToStartPose", 1);
+	ImportProfileInt(iniPath, L"SeeAndFetch\\Return", L"ReturnTimeMs", 1200);
 
 	r.ok = true;
 	return r;

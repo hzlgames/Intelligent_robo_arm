@@ -17,6 +17,8 @@
 #include "JogPadCtrl.h"
 #include "VisualServoController.h"
 #include "VisionService.h"
+#include "SeeAndFetchStateMachine.h"
+#include "ToolConfig.h"
 
 // C智能机械臂Dlg 对话框
 class C智能机械臂Dlg : public CDialogEx
@@ -60,6 +62,10 @@ protected:
 	afx_msg void OnCbnSelChangeVisionAlgo();
 	afx_msg void OnBnClickedVisionProcEnable();
 	afx_msg void OnBnClickedVsNoDrive();
+	afx_msg void OnBnClickedSfEnable();
+	afx_msg void OnBnClickedSfStart();
+	afx_msg void OnBnClickedSfCancel();
+	afx_msg void OnBnClickedSfEStop();
 	afx_msg void OnTimer(UINT_PTR nIDEvent);
 	afx_msg void OnDestroy();
 	afx_msg void OnSize(UINT nType, int cx, int cy);
@@ -71,6 +77,7 @@ private:
 	void BroadcastSettingsImported();
 	void LoadVisionSettingsFromProfile();
 	void SyncVisionAlgoUiFromState();
+	void LoadSeeAndFetchSettingsFromProfile();
 
 	// ===== 主界面：相机预览 =====
 private:
@@ -93,6 +100,18 @@ private:
 	void UpdateMainSerialStatusText();
 	void LoadMainSerialSettings();
 	void SaveMainSerialSettings() const;
+
+	// ===== 连接后自动归位（解决“首次操作瞬移”）=====
+	enum class AutoHomeState
+	{
+		Idle = 0,
+		Moving,
+		Ready,
+		Failed,
+	};
+	void StartAutoHomeAfterConnect();
+	void TickAutoHome(); // 在 OnTimer(20Hz) 中调用
+	bool IsAutoHomeReady() const { return m_autoHomeState == AutoHomeState::Ready; }
 
 	// 主窗口：大小/位置持久化
 	void LoadMainWindowPlacement();
@@ -136,6 +155,19 @@ private:
 	bool      m_visionAlgoEnabled = true;                // false => 手动(点击)，不运行视觉识别
 	VisionService::Mode m_visionAlgoMode = VisionService::Mode::Auto;
 
+	// See&Fetch (auto pick&place)
+	CButton   m_chkSfEnable;
+	CButton   m_btnSfStart;
+	CButton   m_btnSfCancel;
+	CButton   m_btnSfEStop;
+	CStatic   m_staticSfStatus;
+	bool      m_sfEnabled = false;
+	bool      m_sfCmdConfirm = false;
+	bool      m_sfCmdCancel = false;
+	bool      m_sfCmdEStop = false;
+	bool      m_sfVisionOverridden = false;
+	VisionService::Mode m_sfPrevVisionMode = VisionService::Mode::Auto;
+
 	CButton   m_grpMainJog;
 	CButton   m_grpMainStatus;
 
@@ -163,9 +195,22 @@ private:
 	KinematicsConfig m_kc;
 	JogController m_jog;
 
+	// 自动归位状态机（连接后先归位，读回到位后才允许 Jog）
+	AutoHomeState m_autoHomeState = AutoHomeState::Idle;
+	ULONGLONG m_autoHomeStartTick = 0;
+	ULONGLONG m_autoHomeLastCmdTick = 0;
+	int m_autoHomeAttempt = 0;
+	std::array<int, MotionConfig::kJointCount + 1> m_autoHomeTargetPos{}; // 1..6；未用=-1
+
 	// 视觉伺服：将视觉观测转换为 Jog 输入（未来视觉协同）
 	VisualServoController m_vs;
 
 	// 视觉线程：从预览拉帧并产出 VisualObservation（先提供基础验证管线）
 	VisionService m_vision;
+
+	// See&Fetch state machine (joint-step auto)
+	SeeAndFetchStateMachine m_sf;
+
+	// Tool offsets (camera/gripper) used by See&Fetch plane cache; refreshed on settings import
+	ToolConfig m_tool;
 };

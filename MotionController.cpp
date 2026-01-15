@@ -6,6 +6,7 @@
 #include "ArmProtocol.h"
 
 #include <algorithm>
+#include <cstdio>
 
 MotionController::MotionController()
 {
@@ -45,6 +46,7 @@ bool MotionController::BuildServoTargetsFromJoints(const std::vector<std::pair<i
 {
 	out.clear();
 	out.reserve(jointToPos.size());
+
 	for (const auto& jp : jointToPos)
 	{
 		const int joint = jp.first;
@@ -79,6 +81,7 @@ bool MotionController::MoveJointsAbs(const std::vector<std::pair<int, int>>& joi
 	}
 	if (timeMs < 0) timeMs = 0;
 	if (timeMs > 60000) timeMs = 60000;
+
 	ArmCommsService::Instance().EnqueueMove(ArmProtocol::PackMove(servos, static_cast<uint16_t>(timeMs)));
 	return true;
 }

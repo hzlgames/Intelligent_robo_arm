@@ -91,6 +91,8 @@ void VisionService::SetParams(const Params& p)
 	m_params.depthFarMm = std::max(m_params.depthNearMm + 1, m_params.depthFarMm);
 	m_params.excludeHandInflatePx = std::max(0, m_params.excludeHandInflatePx);
 	m_params.excludeHandMaxOverlap = Clamp(m_params.excludeHandMaxOverlap, 0.0, 1.0);
+	m_params.pointPickTarget = std::max(0, std::min(1, m_params.pointPickTarget));
+	// pointPickDetectorOnly / pointPickResetSeq 为逻辑开关/运行期字段，无需 clamp
 	m_params.pointPickMaxRayLenPx = std::max(10, m_params.pointPickMaxRayLenPx);
 	m_params.pointPickMaxRayPerpPx = std::max(5, m_params.pointPickMaxRayPerpPx);
 	m_params.pointPickMaxRadiusPx = std::max(5, m_params.pointPickMaxRadiusPx);
@@ -198,6 +200,7 @@ void VisionService::ThreadMain()
 	};
 	PickFsm pick{};
 	ULONGLONG lastPickDetTickMs = 0;
+	int lastPickResetSeq = 0;
 
 	while (m_running.load())
 	{
@@ -209,6 +212,14 @@ void VisionService::ThreadMain()
 			p = m_params;
 			preview = m_preview;
 			vs = m_vs;
+		}
+
+		// 运行期重置：用于“锁定抓取物 -> 再锁定终点红点”等多段流程
+		if (p.pointPickResetSeq != lastPickResetSeq)
+		{
+			lastPickResetSeq = p.pointPickResetSeq;
+			pick = PickFsm{};
+			lastPickDetTickMs = 0;
 		}
 
 		if (!m_enabled.load() || preview == nullptr || vs == nullptr)
@@ -970,7 +981,7 @@ void VisionService::ThreadMain()
 								}
 							}
 
-							// When pointing, try to find an object near finger direction (Detector required)
+							// When pointing, try to find a target near finger direction
 							if (p.pointPickEnabled && isPointing)
 							{
 								// Throttle detector calls (10Hz)
@@ -1034,126 +1045,131 @@ void VisionService::ThreadMain()
 									VisionOverlayService::RectI cand{};
 									double bestScore = -1e18;
 
-									// 1) Preferred: Detector candidates (if model is configured)
-									if (detLoaded)
+									// Target = Detector object candidate
+									if (p.pointPickTarget == 0)
 									{
-										std::vector<VisionDetector::Detection> dets;
+										// Preferred: Detector candidates (required)
+										if (detLoaded)
 										{
-											std::lock_guard<std::mutex> lk(m_detMu);
-											(void)m_detector.DetectAll(bgr2.data, (int)bgr2.cols, (int)bgr2.rows, (int)bgr2.step, dets);
-										}
-
-										for (const auto& d : dets)
-										{
-											VisionOverlayService::RectI r = clampTrackBox(d.x, d.y, d.w, d.h);
-											if (r.w <= 0 || r.h <= 0) continue;
-
-											// exclude hand overlap
-											if (hasEx && p.excludeHand)
+											std::vector<VisionDetector::Detection> dets;
 											{
-												const int rx2 = r.x + r.w;
-												const int ry2 = r.y + r.h;
-												const int ix1 = std::max(r.x, (int)ex.left);
-												const int iy1 = std::max(r.y, (int)ex.top);
-												const int ix2 = std::min(rx2, (int)ex.right);
-												const int iy2 = std::min(ry2, (int)ex.bottom);
-												const int iw2 = std::max(0, ix2 - ix1);
-												const int ih2 = std::max(0, iy2 - iy1);
-												const double inter = (double)iw2 * (double)ih2;
-												const double area = (double)r.w * (double)r.h;
-												const double overlap = (area > 1e-6) ? (inter / area) : 0.0;
-												if (overlap > p.excludeHandMaxOverlap) continue;
+												std::lock_guard<std::mutex> lk(m_detMu);
+												(void)m_detector.DetectAll(bgr2.data, (int)bgr2.cols, (int)bgr2.rows, (int)bgr2.step, dets);
 											}
 
-											const double cx = (double)r.x + (double)r.w * 0.5;
-											const double cy2 = (double)r.y + (double)r.h * 0.5;
-											const double dx = cx - sx;
-											const double dy = cy2 - sy;
-											const double t = dx * dirx + dy * diry;
-											const double perp = std::fabs(dx * diry - dy * dirx);
-											const double rad = std::sqrt(dx * dx + dy * dy);
-
-											const bool okRay = (t >= 0.0 && t <= (double)maxLen && perp <= (double)maxPerp);
-											const bool okRad = (rad <= (double)maxRad);
-											if (!okRay && !okRad) continue;
-
-											// score: prefer high confidence, then small perp, then small distance
-											const double cconf = Clamp((double)d.confidence, 0.0, 1.0);
-											const double s1 = cconf;
-											const double s2 = -perp / (double)std::max(1, maxPerp);
-											const double s3 = -(okRay ? (t / (double)std::max(1, maxLen)) : (rad / (double)std::max(1, maxRad)));
-											const double score = s1 * 1.0 + s2 * 0.35 + s3 * 0.25;
-											if (score > bestScore)
+											for (const auto& d : dets)
 											{
-												bestScore = score;
-												cand = r;
-												hasCand = true;
+												VisionOverlayService::RectI r = clampTrackBox(d.x, d.y, d.w, d.h);
+												if (r.w <= 0 || r.h <= 0) continue;
+
+												// exclude hand overlap
+												if (hasEx && p.excludeHand)
+												{
+													const int rx2 = r.x + r.w;
+													const int ry2 = r.y + r.h;
+													const int ix1 = std::max(r.x, (int)ex.left);
+													const int iy1 = std::max(r.y, (int)ex.top);
+													const int ix2 = std::min(rx2, (int)ex.right);
+													const int iy2 = std::min(ry2, (int)ex.bottom);
+													const int iw2 = std::max(0, ix2 - ix1);
+													const int ih2 = std::max(0, iy2 - iy1);
+													const double inter = (double)iw2 * (double)ih2;
+													const double area = (double)r.w * (double)r.h;
+													const double overlap = (area > 1e-6) ? (inter / area) : 0.0;
+													if (overlap > p.excludeHandMaxOverlap) continue;
+												}
+
+												const double cx = (double)r.x + (double)r.w * 0.5;
+												const double cy2 = (double)r.y + (double)r.h * 0.5;
+												const double dx = cx - sx;
+												const double dy = cy2 - sy;
+												const double t = dx * dirx + dy * diry;
+												const double perp = std::fabs(dx * diry - dy * dirx);
+												const double rad = std::sqrt(dx * dx + dy * dy);
+
+												const bool okRay = (t >= 0.0 && t <= (double)maxLen && perp <= (double)maxPerp);
+												const bool okRad = (rad <= (double)maxRad);
+												if (!okRay && !okRad) continue;
+
+												// score: prefer high confidence, then small perp, then small distance
+												const double cconf = Clamp((double)d.confidence, 0.0, 1.0);
+												const double s1 = cconf;
+												const double s2 = -perp / (double)std::max(1, maxPerp);
+												const double s3 = -(okRay ? (t / (double)std::max(1, maxLen)) : (rad / (double)std::max(1, maxRad)));
+												const double score = s1 * 1.0 + s2 * 0.35 + s3 * 0.25;
+												if (score > bestScore)
+												{
+													bestScore = score;
+													cand = r;
+													hasCand = true;
+												}
 											}
 										}
+
+										// 用户要求“只允许 Detector 候选”：禁止轮廓兜底
+										// 若 detLoaded==false 或本帧无有效候选，则 hasCand 保持 false。
 									}
-
-									// 2) Fallback (no model / detector can't detect): edge/contour proposals near ray
-									if (!hasCand)
+									else
 									{
-										// Build ROI mask: thick ray tube + fingertip radius, minus hand rect
-										cv::Mat mask = cv::Mat::zeros((int)h, (int)w, CV_8UC1);
-										const cv::Point p0((int)std::lround(sx), (int)std::lround(sy));
-										const cv::Point p1((int)std::lround(sx + dirx * (double)maxLen), (int)std::lround(sy + diry * (double)maxLen));
-										const int thick = std::max(6, maxPerp * 2);
-										cv::line(mask, p0, p1, cv::Scalar(255), thick, cv::LINE_AA);
-										cv::circle(mask, p0, maxRad, cv::Scalar(255), -1, cv::LINE_AA);
-										if (hasEx)
+										// Target = tabletop red dot: pick by red blob near pointing ray
+										try
 										{
-											const cv::Rect exr((int)ex.left, (int)ex.top, (int)(ex.right - ex.left), (int)(ex.bottom - ex.top));
-											cv::rectangle(mask, exr, cv::Scalar(0), -1);
-										}
+											cv::Mat hsv;
+											cv::cvtColor(bgr2, hsv, cv::COLOR_BGR2HSV);
 
-										cv::Mat gray;
-										cv::cvtColor(bgr2, gray, cv::COLOR_BGR2GRAY);
-										cv::GaussianBlur(gray, gray, cv::Size(5, 5), 0.0);
-										cv::Mat edges;
-										cv::Canny(gray, edges, 60, 140);
-										// limit to ROI
-										edges &= mask;
-										// connect edges a bit
-										cv::Mat k = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
-										cv::dilate(edges, edges, k);
+											cv::Mat m1, m2, mask;
+											cv::inRange(hsv, cv::Scalar(0, 100, 80), cv::Scalar(10, 255, 255), m1);
+											cv::inRange(hsv, cv::Scalar(160, 100, 80), cv::Scalar(179, 255, 255), m2);
+											mask = m1 | m2;
 
-										std::vector<std::vector<cv::Point>> contours;
-										cv::findContours(edges, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
-										for (const auto& cts : contours)
-										{
-											if (cts.size() < 10) continue;
-											const cv::Rect rr = cv::boundingRect(cts);
-											const int area = rr.area();
-											if (area < 300) continue;
-											if (rr.width >= (int)w || rr.height >= (int)h) continue;
+											const int ksz = 5;
+											cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(ksz, ksz));
+											cv::morphologyEx(mask, mask, cv::MORPH_OPEN, kernel);
+											cv::morphologyEx(mask, mask, cv::MORPH_CLOSE, kernel);
 
-											VisionOverlayService::RectI r = clampTrackBox(rr.x, rr.y, rr.width, rr.height);
-											if (r.w <= 0 || r.h <= 0) continue;
-
-											const double cx = (double)r.x + (double)r.w * 0.5;
-											const double cy2 = (double)r.y + (double)r.h * 0.5;
-											const double dx = cx - sx;
-											const double dy = cy2 - sy;
-											const double t = dx * dirx + dy * diry;
-											const double perp = std::fabs(dx * diry - dy * dirx);
-											const double rad = std::sqrt(dx * dx + dy * dy);
-											const bool okRay = (t >= 0.0 && t <= (double)maxLen && perp <= (double)maxPerp);
-											const bool okRad = (rad <= (double)maxRad);
-											if (!okRay && !okRad) continue;
-
-											// prefer larger contours but still close to ray
-											const double aNorm = Clamp((double)area / (double)std::max(1, maxPerp * maxLen), 0.0, 1.0);
-											const double s2 = -perp / (double)std::max(1, maxPerp);
-											const double s3 = -(okRay ? (t / (double)std::max(1, maxLen)) : (rad / (double)std::max(1, maxRad)));
-											const double score = aNorm * 0.8 + s2 * 0.45 + s3 * 0.25;
-											if (score > bestScore)
+											std::vector<std::vector<cv::Point>> contours;
+											cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+											if (!contours.empty())
 											{
-												bestScore = score;
-												cand = r;
-												hasCand = true;
+												double bestArea = 0.0;
+												int bestIdx = -1;
+												for (int i = 0; i < (int)contours.size(); i++)
+												{
+													const double a = cv::contourArea(contours[i]);
+													if (a > bestArea) { bestArea = a; bestIdx = i; }
+												}
+												if (bestIdx >= 0 && bestArea > 25.0)
+												{
+													const cv::Rect rr = cv::boundingRect(contours[bestIdx]);
+													VisionOverlayService::RectI r = clampTrackBox(rr.x, rr.y, rr.width, rr.height);
+													if (r.w > 0 && r.h > 0)
+													{
+														const double cx = (double)r.x + (double)r.w * 0.5;
+														const double cy2 = (double)r.y + (double)r.h * 0.5;
+														const double dx = cx - sx;
+														const double dy = cy2 - sy;
+														const double t = dx * dirx + dy * diry;
+														const double perp = std::fabs(dx * diry - dy * dirx);
+														const double rad = std::sqrt(dx * dx + dy * dy);
+														const bool okRay = (t >= 0.0 && t <= (double)maxLen && perp <= (double)maxPerp);
+														const bool okRad = (rad <= (double)maxRad);
+														if (okRay || okRad)
+														{
+															const double aNorm = Clamp(bestArea / (double)std::max(1, maxPerp * maxLen), 0.0, 1.0);
+															const double s2 = -perp / (double)std::max(1, maxPerp);
+															const double s3 = -(okRay ? (t / (double)std::max(1, maxLen)) : (rad / (double)std::max(1, maxRad)));
+															const double score = aNorm * 0.8 + s2 * 0.45 + s3 * 0.25;
+															bestScore = score;
+															cand = r;
+															hasCand = true;
+														}
+													}
+												}
 											}
+										}
+										catch (...)
+										{
+											hasCand = false;
 										}
 									}
 
@@ -1276,15 +1292,30 @@ void VisionService::ThreadMain()
 			r.hasConfidence = true;
 			r.confidence = conf;
 
-			// Detector bbox
-			if (mode == Mode::Detector && hasTarget)
+			// Track box (for size-based range estimation etc.)
+			if (hasTrackBox)
 			{
 				r.hasBox = true;
-				r.boxX = detBox.x;
-				r.boxY = detBox.y;
-				r.boxW = detBox.w;
-				r.boxH = detBox.h;
+				r.boxX = trackBox.x;
+				r.boxY = trackBox.y;
+				r.boxW = trackBox.w;
+				r.boxH = trackBox.h;
+			}
+			// Detector class id (only meaningful in Detector mode)
+			if (mode == Mode::Detector && hasTarget)
+			{
 				r.classId = detBox.classId;
+			}
+
+			// PointPick selection (for See&Fetch: using hand gestures to lock target / red dot)
+			r.pickState = pick.state;
+			r.hasPickBox = (pick.state != 0 && pick.box.w > 0 && pick.box.h > 0);
+			if (r.hasPickBox)
+			{
+				r.pickBoxX = pick.box.x;
+				r.pickBoxY = pick.box.y;
+				r.pickBoxW = pick.box.w;
+				r.pickBoxH = pick.box.h;
 			}
 
 			{

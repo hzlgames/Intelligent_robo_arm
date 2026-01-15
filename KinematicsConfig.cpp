@@ -3,6 +3,8 @@
 #include "KinematicsConfig.h"
 
 #include <afxwin.h>
+#include <algorithm>
+#include <cmath>
 
 namespace
 {
@@ -42,11 +44,12 @@ KinematicsConfig::KinematicsConfig()
 	// J3: 0°=500, +45°=680
 	// J4: 0°=500, +45°=700
 	// J5: 0°=500, +90°=900
-	m_joints[1] = JointCalib{ 500, 690, 45, 0.0 };
-	m_joints[2] = JointCalib{ 500, 320, 45, 0.0 };
-	m_joints[3] = JointCalib{ 500, 680, 45, 0.0 };
-	m_joints[4] = JointCalib{ 500, 700, 45, 0.0 };
-	m_joints[5] = JointCalib{ 500, 900, 90, 0.0 };
+	m_joints[1] = JointCalib{ 500, 690, 45, 0.0, false };
+	// 你反馈 J2/J3 “物理角方向反了”，默认开启 physicalInvert 以匹配实际机械方向。
+	m_joints[2] = JointCalib{ 500, 320, 45, 0.0, false };
+	m_joints[3] = JointCalib{ 500, 680, 45, 0.0, false };
+	m_joints[4] = JointCalib{ 500, 700, 45, 0.0, false };
+	m_joints[5] = JointCalib{ 500, 900, 90, 0.0, false };
 }
 
 std::wstring KinematicsConfig::SectionLinks()
@@ -62,19 +65,24 @@ std::wstring KinematicsConfig::SectionForJoint(int nJoint)
 	return std::wstring(s.GetString());
 }
 
+std::wstring KinematicsConfig::SectionSafety()
+{
+	return L"Kinematics\\Safety";
+}
+
 int KinematicsConfig::AxisSignForJoint(int nJoint)
 {
 	// 与 Reference/mechanics.md 的轴向说明保持一致：
-	// - J1 绕 Base.Z 正向
-	// - J2 绕局部 X 正向
-	// - J3 绕局部 X 反向（与 J2 平行但方向相反）
-	// - J4 绕局部 X 正向
-	// - J5 绕局部 Z 正向（末端绕自身轴旋转，运动学位置通常不使用）
+	// - J1 绕 Base.Z 正向 -> +1
+	// - J2 绕局部 X 正向 -> +1
+	// - J3 绕局部 X 反向 -> -1
+	// - J4 绕局部 X 正向 -> +1
+	// - J5 绕局部 Z 正向 -> +1
 	switch (nJoint)
 	{
 	case 1: return +1;
-	case 2: return +1;
-	case 3: return -1;
+	case 2: return +1;  // [FIX] 文档说 J2 绕 X 正向
+	case 3: return -1;  // [FIX] 文档说 J3 绕 X 反向
 	case 4: return +1;
 	case 5: return +1;
 	default: return +1;
@@ -93,6 +101,22 @@ void KinematicsConfig::LoadAll()
 		m_links.L_cam = static_cast<double>(AfxGetApp()->GetProfileInt(sec.c_str(), L"L_cam_mm", static_cast<int>(m_links.L_cam)));
 	}
 
+	// 1.5) Safety（用于手动 FPS 模式的积分限制）
+	{
+		const std::wstring sec = SectionSafety();
+		const int defRMax = (int)std::lround(m_links.L_arm1 + m_links.L_arm2 + m_links.L_wrist);
+		m_safety.pitchMinDeg = AfxGetApp()->GetProfileInt(sec.c_str(), L"PitchMinDeg", m_safety.pitchMinDeg);
+		m_safety.pitchMaxDeg = AfxGetApp()->GetProfileInt(sec.c_str(), L"PitchMaxDeg", m_safety.pitchMaxDeg);
+		m_safety.zMinMm = AfxGetApp()->GetProfileInt(sec.c_str(), L"ZMinMm", m_safety.zMinMm);
+		m_safety.rMinMm = AfxGetApp()->GetProfileInt(sec.c_str(), L"RMinMm", m_safety.rMinMm);
+		m_safety.rMaxMm = AfxGetApp()->GetProfileInt(sec.c_str(), L"RMaxMm", defRMax);
+
+		if (m_safety.pitchMinDeg > m_safety.pitchMaxDeg) std::swap(m_safety.pitchMinDeg, m_safety.pitchMaxDeg);
+		if (m_safety.zMinMm < 0) m_safety.zMinMm = 0;
+		if (m_safety.rMinMm < 0) m_safety.rMinMm = 0;
+		if (m_safety.rMaxMm < m_safety.rMinMm + 10) m_safety.rMaxMm = m_safety.rMinMm + 10;
+	}
+
 	// 2) 关节两点标定 + 零位偏置
 	for (int j = 1; j <= kJointCount; j++)
 	{
@@ -106,6 +130,8 @@ void KinematicsConfig::LoadAll()
 
 		// zeroOffsetDeg 以 milli-degree 存储
 		c.zeroOffsetDeg = ReadScaledDouble(sec, L"ZeroOffset_mdeg", c.zeroOffsetDeg, 1000);
+		// 物理角翻转（0/1）
+		c.physicalInvert = (AfxGetApp()->GetProfileInt(sec.c_str(), L"PhysicalInvert", c.physicalInvert ? 1 : 0) != 0);
 
 		m_joints[j] = c;
 	}
@@ -123,6 +149,16 @@ void KinematicsConfig::SaveAll() const
 		AfxGetApp()->WriteProfileInt(sec.c_str(), L"L_cam_mm", static_cast<int>(m_links.L_cam));
 	}
 
+	// 1.5) Safety
+	{
+		const std::wstring sec = SectionSafety();
+		AfxGetApp()->WriteProfileInt(sec.c_str(), L"PitchMinDeg", m_safety.pitchMinDeg);
+		AfxGetApp()->WriteProfileInt(sec.c_str(), L"PitchMaxDeg", m_safety.pitchMaxDeg);
+		AfxGetApp()->WriteProfileInt(sec.c_str(), L"ZMinMm", m_safety.zMinMm);
+		AfxGetApp()->WriteProfileInt(sec.c_str(), L"RMinMm", m_safety.rMinMm);
+		AfxGetApp()->WriteProfileInt(sec.c_str(), L"RMaxMm", m_safety.rMaxMm);
+	}
+
 	// 2) 关节标定
 	for (int j = 1; j <= kJointCount; j++)
 	{
@@ -132,6 +168,7 @@ void KinematicsConfig::SaveAll() const
 		AfxGetApp()->WriteProfileInt(sec.c_str(), L"PosAtPlusDeg", c.posAtPlusDeg);
 		AfxGetApp()->WriteProfileInt(sec.c_str(), L"PlusDeg", c.plusDeg);
 		WriteScaledDouble(sec, L"ZeroOffset_mdeg", c.zeroOffsetDeg, 1000);
+		AfxGetApp()->WriteProfileInt(sec.c_str(), L"PhysicalInvert", c.physicalInvert ? 1 : 0);
 	}
 }
 

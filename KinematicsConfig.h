@@ -36,6 +36,26 @@ public:
 		// 关节零位偏置（度）：用于修正“舵机0°”与“几何模型0°”的差异（装配/安装导致）
 		// 默认 0；未来可通过视觉/标定拟合得到。
 		double zeroOffsetDeg = 0.0;
+
+		// 物理角翻转：用于修正“诊断页/标定定义的物理角度方向”与实际机械方向相反的问题。
+		// - true：将物理角整体取反（physicalDeg = -physicalDeg）
+		// - 该开关会影响 ServoPos<->角度 的定义，因此在 KinTest 的 Physical 模式下会真正改变舵机目标pos。
+		bool physicalInvert = false;
+	};
+
+	// FPS/手动控制安全参数（用于约束 r/z/pitch 的积分范围）
+	struct SafetyParams
+	{
+		// 俯仰角限制（度）
+		int pitchMinDeg = -90;
+		int pitchMaxDeg = 90;
+
+		// 最小高度（mm）
+		int zMinMm = 20;
+
+		// 工作半径（mm）
+		int rMinMm = 30;
+		int rMaxMm = 290;
 	};
 
 	KinematicsConfig();
@@ -50,22 +70,30 @@ public:
 	const JointCalib& GetJoint(int nJoint) const { return m_joints[nJoint]; } // 1..5
 	JointCalib& GetJoint(int nJoint) { return m_joints[nJoint]; }
 
+	const SafetyParams& Safety() const { return m_safety; }
+	SafetyParams& Safety() { return m_safety; }
+
 	// 关节轴符号约定（与 mechanics.md 对齐）：
-	// - J1: +Z
-	// - J2: +X
-	// - J3: -X（反向）
-	// - J4: +X
-	// - J5: +Z
+	// - J1: 绕 Base.Z 正向 -> +1
+	// - J2: 绕局部 X 正向 -> +1
+	// - J3: 绕局部 X 反向 -> -1
+	// - J4: 绕局部 X 正向 -> +1
+	// - J5: 绕局部 Z 正向 -> +1
 	static int AxisSignForJoint(int nJoint);
 
 private:
 	static std::wstring SectionLinks();
 	static std::wstring SectionForJoint(int nJoint);
+	static std::wstring SectionSafety();
 
 private:
 	LinkLengthsMm m_links{};
 	std::array<JointCalib, kJointCount + 1> m_joints{}; // 0 unused
+	SafetyParams m_safety{};
 };
+
+
+
 
 
 

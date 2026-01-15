@@ -96,6 +96,12 @@
     <ClInclude Include="ArmStateEstimator.h">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="KinematicsDiagPage.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="KinTestDiagPage.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
     <ClInclude Include="ToolConfig.h">
       <Filter>头文件</Filter>
     </ClInclude>
@@ -103,6 +109,12 @@
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="SeeAndFetchStateMachine.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="SeeAndFetchJointPolicy.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="SeeAndFetchDiagPage.h">
       <Filter>头文件</Filter>
     </ClInclude>
   </ItemGroup>
@@ -167,6 +179,12 @@
     <ClCompile Include="ArmStateEstimator.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="KinematicsDiagPage.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="KinTestDiagPage.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
     <ClCompile Include="ToolConfig.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
@@ -174,6 +192,12 @@
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="SeeAndFetchStateMachine.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="SeeAndFetchJointPolicy.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="SeeAndFetchDiagPage.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
   </ItemGroup>
