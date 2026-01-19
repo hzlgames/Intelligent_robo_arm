@@ -33,7 +33,7 @@ MFC 6自由度机械臂控制软件，集成运动学、视觉（OpenCV）与模
 *   `SeeAndFetchStateMachine.*`: 视觉抓取状态机逻辑
 *   `MotionController.*`: 机械臂运动控制核心
 *   `VisionService.*`: 视觉处理服务
-*   `models/`: **(需手动放置模型)** 存放ONNX模型文件
+*   `models/`: 包含 YOLO 和 MediaPipe 的 ONNX 模型文件
 *   `guide_docs/`: [详细调试指南](guide_docs/)
 
 ---
