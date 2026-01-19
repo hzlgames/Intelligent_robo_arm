@@ -37,4 +37,4 @@ MFC 6自由度机械臂控制软件，集成运动学、视觉（OpenCV）与模
 *   `guide_docs/`: [详细调试指南](guide_docs/)
 
 ---
-*Created for 软件技术基础课程*
+*Created for 软件技术基础*
