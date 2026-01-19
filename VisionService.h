@@ -10,8 +10,6 @@
 #include <vector>
 
 class CPreview;
-class VisualServoController;
-
 #include "VisionDetector.h"
 #include "VisionHandLandmarks.h"
 
@@ -19,7 +17,7 @@ class VisualServoController;
 // VisionService
 // ============================
 // 独立视觉线程：从 CPreview 拉取最新 RGB32 帧（可丢帧，只保留最新），
-// 运行轻量算法并输出 VisualObservation（通过 VisualServoController::UpdateObservation）。
+// 运行轻量算法并缓存 VisualObservation/Result（供主线程读取）。
 //
 // 设计目标：
 // - 不阻塞 MF 预览线程（OnReadSample）
@@ -37,11 +35,12 @@ public:
 		Detector = 4,       // 目标检测（DNN/ONNX 等）
 		HandSticker = 5,    // 手势/指向（双色贴纸）
 		HandLandmarks = 6,  // 手势关键点（Palm+Handpose ONNX）
+		Gemini = 7,         // 云端 Gemini 目标检测
 	};
 
 	struct Params
 	{
-		int processPeriodMs = 33; // 约 30Hz；处理慢时会自动“丢帧”
+		int processPeriodMs = 33; // 约 30Hz；处理慢时会自动"丢帧"
 		int sampleStride = 8;    // 取样步长：越大越省 CPU，但定位越粗
 		double emaAlpha = 0.35;  // 目标点 EMA 平滑（0..1）
 
@@ -52,33 +51,43 @@ public:
 		int depthNearMm = 120;
 		int depthFarMm = 220;
 
-		// ===== 排除手部（为“指哪抓哪”做准备）=====
-		// 启用后：在 Detector/Auto/ColorTrack/最亮点 等“找目标物”的模式里，
+		// ===== 排除手部（为"指哪抓哪"做准备）=====
+		// 启用后：在 Detector/Auto/ColorTrack/最亮点 等"找目标物"的模式里，
 		// 先用 HandLandmarks 得到手的 bbox，再过滤掉与手框重叠的候选目标。
 		bool excludeHand = true;
 		int excludeHandInflatePx = 20;      // 手框扩张像素（更稳地排除手/手臂）
-		double excludeHandMaxOverlap = 0.3; // overlap = intersectArea / boxArea；超过则认为“是手/被手遮挡”
+		double excludeHandMaxOverlap = 0.3; // overlap = intersectArea / boxArea；超过则认为"是手/被手遮挡"
 
 		// ===== 指向选物（仅颜色反馈，不联动）=====
 		// 逻辑：Point(只伸食指) -> 在指向附近找物体 -> 指向同一物体连续 hold>=3s 锁定 -> Pinch hold>=3s 确认 -> OpenPalm hold>=3s 取消
 		bool pointPickEnabled = true;
 		// PointPick 目标类型：
-		// - 0：Detector 物体候选（从 Detector 检测框中选择，符合“只允许 Detector 候选”）
-		// - 1：红点候选（从 HSV 红色 blob 生成候选框，用于“终点红点”手势锁定）
+		// - 0：Gemini 物体候选（云端识别，返回目标框）
+		// - 1：红点候选（从 HSV 红色 blob 生成候选框，用于"终点红点"手势锁定）
 		int pointPickTarget = 0;
-		// 是否禁止“边缘/轮廓”兜底候选（true=只允许 Detector 候选）
+		// 是否禁止"边缘/轮廓"兜底候选（true=只允许候选框来源，不使用轮廓兜底）
 		bool pointPickDetectorOnly = true;
-		// 运行期重置序号：每次 +1 会强制清空 PointPick FSM（用于“锁定后进入下一阶段，再次锁定”）
+		// 运行期重置序号：每次 +1 会强制清空 PointPick FSM（用于"锁定后进入下一阶段，再次锁定"）
 		// 注意：这是运行期字段，通常不需要写入 ini。
 		int pointPickResetSeq = 0;
-		int pointPickMaxRayLenPx = 320;     // 指向“前方”最大距离（像素）
+		int pointPickMaxRayLenPx = 320;     // 指向"前方"最大距离（像素）
 		int pointPickMaxRayPerpPx = 90;     // 到指向射线的最大垂距（像素）
 		int pointPickMaxRadiusPx = 140;     // fallback：若射线匹配不到，允许在指尖附近的搜索半径
 		int pointPickHoldLockMs = 3000;     // Point 持续指向同一物体 >= 3s -> 锁定
 		int pointPickHoldConfirmMs = 3000;  // Pinch >= 3s -> 确认夹取
 		int pointPickHoldCancelMs = 3000;   // OpenPalm >= 3s -> 取消
 		int pointPickCancelFlashMs = 800;   // 取消后蓝框闪烁时间
-		double pointPickIouSame = 0.5;      // 判定“同一物体”的 IoU 阈值（0..1）
+		double pointPickIouSame = 0.5;      // 判定"同一物体"的 IoU 阈值（0..1）
+
+		// ===== Gemini (cloud) =====
+		std::wstring geminiApiKey;
+		std::wstring geminiModel = L"gemini-3-flash-preview";
+		int geminiRequestIntervalMs = 2000; // 节流：两次请求的最小间隔
+		std::wstring geminiProxy;           // 显式代理 (例如 "127.0.0.1:7890")
+		// 运行期重置序号：每次 +1 会强制刷新 Gemini 请求缓存
+		int geminiResetSeq = 0;
+		// GrabTest: 让 Gemini 返回 TimeToFetch=0/1
+		bool geminiEnableTimeToFetch = false;
 	};
 
 	struct Stats
@@ -107,7 +116,7 @@ public:
 		double depthMm = 0.0;
 
 		// TrackBox（优先：Detector bbox；否则为当前模式的跟踪框，例如 ArUco/ColorTrack/HandLandmarks 等）
-		// 说明：用于“无深度时用框大小估距”等上层逻辑；classId 仅在 Detector 时有效。
+		// 说明：用于"无深度时用框大小估距"等上层逻辑；classId 仅在 Detector 时有效。
 		bool hasBox = false;
 		int boxX = 0;
 		int boxY = 0;
@@ -115,7 +124,7 @@ public:
 		int boxH = 0;
 		int classId = -1;
 
-		// ===== PointPick（手势选物/选红点）的“实际输出”=====
+		// ===== PointPick（手势选物/选红点）的"实际输出"=====
 		// state: 0=None,1=Searching,2=Locked,3=Confirmed,4=Cancelled
 		int pickState = 0;
 		bool hasPickBox = false;
@@ -123,6 +132,14 @@ public:
 		int pickBoxY = 0;
 		int pickBoxW = 0;
 		int pickBoxH = 0;
+
+		// ===== HandLandmarks 手势（用于上层暂停追踪）=====
+		bool hasHandLandmarks = false;
+		int handGesture = 0; // VisionOverlayService::Gesture enum value
+
+		// ===== Gemini TimeToFetch (grab test) =====
+		bool hasGeminiTimeToFetch = false;
+		int geminiTimeToFetch = -1; // 0/1
 	};
 
 public:
@@ -146,15 +163,13 @@ public:
 	// 绑定预览源（不持有指针；调用方需保证生命周期：Stop 后再销毁 Preview）
 	void SetPreview(CPreview* preview);
 
-	// 绑定输出目标（不持有指针；线程会调用 UpdateObservation）
-	void SetVisualServo(VisualServoController* vs);
 
 	// 启停线程
 	void Start();
 	void Stop();
 	bool IsRunning() const { return m_running.load(); }
 
-	// 仅控制“是否产出观测”（线程仍可保持运行）
+	// 仅控制"是否产出观测"（线程仍可保持运行）
 	void SetEnabled(bool on);
 	bool IsEnabled() const { return m_enabled.load(); }
 
@@ -169,7 +184,6 @@ private:
 	Params m_params{};
 
 	CPreview* m_preview = nullptr;
-	VisualServoController* m_vs = nullptr;
 
 	std::atomic<bool> m_running{ false };
 	std::atomic<bool> m_enabled{ true };
@@ -199,5 +213,3 @@ private:
 	VisionHandLandmarks m_hand;
 	ULONGLONG m_lastHandLoadAttemptMs = 0;
 };
-
-

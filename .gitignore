@@ -25,13 +25,18 @@ x86/
 *.recipe
 *.res
 *.log
+*.iobj
+*.ipdb
 
-# MSVC stuff
-ipch/
+# Dependencies
+vcpkg_installed/
+
+# OS
 $Recycle.Bin/
+Thumbs.db
+Desktop.ini
 
-# Others
+# Temporary
 *.tmp
 *.bak
 *.swp
-

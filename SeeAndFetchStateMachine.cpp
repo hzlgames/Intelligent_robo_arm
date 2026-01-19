@@ -4,6 +4,7 @@
 #include "SeeAndFetchJointPolicy.h"
 
 #include "ArmKinematics.h"
+#include "VisionOverlayService.h"
 
 #include <cmath>
 
@@ -20,8 +21,10 @@ namespace
 		case SeeAndFetchStateMachine::State::Grasp: return L"Grasp";
 		case SeeAndFetchStateMachine::State::Retreat: return L"Retreat";
 	case SeeAndFetchStateMachine::State::SelectGoal: return L"SelectGoal";
+	case SeeAndFetchStateMachine::State::FindGoalObject: return L"FindGoalObject";
 	case SeeAndFetchStateMachine::State::SelectTerminal: return L"SelectTerminal";
-	case SeeAndFetchStateMachine::State::GoInitialPose: return L"GoInitialPose";
+	case SeeAndFetchStateMachine::State::GoAutoHome: return L"GoAutoHome";
+	case SeeAndFetchStateMachine::State::ReadyToGrasp: return L"ReadyToGrasp";
 	case SeeAndFetchStateMachine::State::GoTerminalPose: return L"GoTerminalPose";
 		case SeeAndFetchStateMachine::State::Place: return L"Place";
 		case SeeAndFetchStateMachine::State::ReturnHome: return L"ReturnHome";
@@ -37,6 +40,18 @@ namespace
 		const int minInt = std::max(0, P.timing.minCommandIntervalMs);
 		if (lastCmd != 0 && now > lastCmd && (now - lastCmd) < (ULONGLONG)minInt) return false;
 		return true;
+	}
+
+	inline double Clamp(double v, double mn, double mx)
+	{
+		if (v < mn) return mn;
+		if (v > mx) return mx;
+		return v;
+	}
+
+	inline double StepFromPx(double absErrPx, double kDegPerPx, double minDeg, double maxDeg)
+	{
+		return Clamp(kDegPerPx * absErrPx, minDeg, maxDeg);
 	}
 }
 
@@ -57,6 +72,8 @@ void SeeAndFetchStateMachine::ToIdle()
 
 	m_lockedUntilMs = 0;
 	m_lastCmdMs = 0;
+	m_pauseUntilMs = 0;
+	m_pauseWasActive = false;
 	m_centerStableFrames = 0;
 	m_depthStableFrames = 0;
 	m_hasLastDepthMm = false;
@@ -85,6 +102,16 @@ void SeeAndFetchStateMachine::ToIdle()
 	m_hasTerminalPosePos = false;
 	for (int j = 0; j <= MotionConfig::kJointCount; j++) m_terminalPosePos[(size_t)j] = -1;
 	m_goPosePhase = 0;
+
+	// FindGoalObject 相关
+	m_hasConfirmedGoalPx = false;
+	m_confirmedGoalU = 0.0;
+	m_confirmedGoalV = 0.0;
+	m_lockCuePhase = 0;
+	m_lockCueBasePos = -1;
+	m_lockCueTargetPos = -1;
+	m_confirmOpenPhase = 0;
+	// 注意：m_hasAutoHomePos 和 m_autoHomePos 不在这里重置，由外部 SetAutoHomePos() 设置
 }
 
 bool SeeAndFetchStateMachine::Tick(const Input& in, const UserCommand& cmd, Output& out)
@@ -93,6 +120,7 @@ bool SeeAndFetchStateMachine::Tick(const Input& in, const UserCommand& cmd, Outp
 	out.state = m_state;
 
 	const ULONGLONG now = ::GetTickCount64();
+	bool allowMoveDuringPause = false;
 
 	// 最高优先级：急停
 	if (cmd.eStop)
@@ -110,12 +138,66 @@ bool SeeAndFetchStateMachine::Tick(const Input& in, const UserCommand& cmd, Outp
 	if (cmd.cancel)
 	{
 		ToIdle();
+		m_pauseUntilMs = 0; // 清除暂停
+		m_pauseWasActive = false;
 		out.state = m_state;
 		out.active = false;
 		out.vsEnable = false;
 		out.lockManualJog = false;
 		out.reason = L"[Cancel] back to Idle.";
 		return true;
+	}
+
+	// =========================================================
+	// Point 手势粘滞暂停（仅 SelectGoal / SelectTerminal）
+	// 逻辑：检测到 Point 后，保持暂停 2000ms，即使中间有帧没检测到
+	// 注：暂停仅抑制舵机输出，不中断搜索流程
+	// =========================================================
+	const bool inTrackingState = (m_state == State::SelectGoal || m_state == State::SelectTerminal);
+	bool pauseActive = false;
+	if (inTrackingState)
+	{
+		// 检测到 Point 手势时，刷新暂停截止时间
+		const bool isPointGesture = (in.hasHandLandmarks && in.handGesture == (int)VisionOverlayService::Gesture::Point);
+		const bool isSearching = (in.pickState == 1); // PointPick FSM 正在搜索
+		if (isPointGesture || isSearching)
+		{
+			m_pauseUntilMs = now + 2000; // 延长暂停 2000ms
+		}
+
+		// 如果仍在暂停期内，仅设置 pause 标记（不中断后续逻辑）
+		if (m_pauseUntilMs > 0 && now < m_pauseUntilMs)
+		{
+			const bool enteringPause = !m_pauseWasActive;
+			m_pauseWasActive = true;
+			pauseActive = true;
+			out.pauseTracking = true;
+			out.requestVisionMode = 6; // HandLandmarks
+			out.requestPointPickTarget = (m_state == State::SelectTerminal) ? 1 : 0;
+			if (enteringPause)
+			{
+				out.requestPointPickReset = true; // 进入暂停时重置一次，确保开始搜索
+			}
+		}
+		else
+		{
+			m_pauseWasActive = false;
+		}
+	}
+	else
+	{
+		// 不在追踪状态时，清除暂停计时
+		m_pauseUntilMs = 0;
+		m_pauseWasActive = false;
+	}
+
+	// 锁定后取消暂停：一旦出现锁定框，允许输出（避免提示动作被压制）
+	if (m_state == State::SelectGoal && in.pickState == 2)
+	{
+		pauseActive = false;
+		m_pauseUntilMs = 0;
+		m_pauseWasActive = false;
+		out.pauseTracking = false;
 	}
 
 	const bool hasTarget = in.hasObs && (in.obs.hasTargetPx || in.obs.hasRay || in.obs.hasDepthMm);
@@ -128,27 +210,35 @@ bool SeeAndFetchStateMachine::Tick(const Input& in, const UserCommand& cmd, Outp
 	out.requestVisionMode = -1;
 	out.requestPointPickTarget = -1;
 	out.requestPointPickReset = false;
+	out.requestGeminiReset = false;
 	if (autoActive)
 	{
-		// Prefer explicit range-driven mode selection
-		const auto rm = m_params.approach.rangeMode;
-		if (rm == Params::Approach::RangeMode::ArucoDepth)
+		if (m_params.grabTestOnly)
 		{
-			out.requestVisionMode = 2; // VisionService::Mode::Aruco
-		}
-		else if (rm == Params::Approach::RangeMode::BboxArea)
-		{
-			// 只有在明确要求 Detector bbox 时才强制切换到 Detector；
-			// 否则允许用户用 ColorTrack/HandSticker 等同样会产出 trackBox 的模式。
-			if (m_params.approach.bboxRequireDetector)
-			{
-				out.requestVisionMode = 4; // VisionService::Mode::Detector
-			}
+			out.requestVisionMode = 7; // VisionService::Mode::Gemini
 		}
 		else
 		{
-			// Auto: keep current unless user asked to force aruco
-			if (m_params.preferArucoDuringAuto) out.requestVisionMode = 0; // Auto
+			// Prefer explicit range-driven mode selection
+			const auto rm = m_params.approach.rangeMode;
+			if (rm == Params::Approach::RangeMode::ArucoDepth)
+			{
+				out.requestVisionMode = 2; // VisionService::Mode::Aruco
+			}
+			else if (rm == Params::Approach::RangeMode::BboxArea)
+			{
+				// 只有在明确要求 Detector bbox 时才强制切换到 Detector；
+				// 否则允许用户用 ColorTrack/HandSticker 等同样会产出 trackBox 的模式。
+				if (m_params.approach.bboxRequireDetector)
+				{
+					out.requestVisionMode = 4; // VisionService::Mode::Detector
+				}
+			}
+			else
+			{
+				// Auto: keep current unless user asked to force aruco
+				if (m_params.preferArucoDuringAuto) out.requestVisionMode = 0; // Auto
+			}
 		}
 	}
 
@@ -161,8 +251,18 @@ bool SeeAndFetchStateMachine::Tick(const Input& in, const UserCommand& cmd, Outp
 		out.reason = L"[Idle] waiting confirm.";
 		if (cmd.confirm)
 		{
-			// 进入“手势锁定抓取物”流程（参考 fake_motion_code.md）
-			m_state = State::SelectGoal;
+			// 抓取测试模式：直接进入抓取流程
+			if (m_params.grabTestOnly)
+			{
+				m_state = State::Acquire;
+				out.requestVisionMode = 7; // VisionService::Mode::Gemini
+				out.requestGeminiReset = true;
+			}
+			else
+			{
+				// 进入"手势锁定抓取物"流程（参考 fake_motion_code.md）
+				m_state = State::SelectGoal;
+			}
 			m_stableFrames = 0;
 			m_lostFrames = 0;
 			m_centerStableFrames = 0;
@@ -176,150 +276,451 @@ bool SeeAndFetchStateMachine::Tick(const Input& in, const UserCommand& cmd, Outp
 			m_goPosePhase = 0;
 			m_hasInitialPosePos = false;
 			m_hasTerminalPosePos = false;
+			m_pauseUntilMs = 0; // 清除暂停状态
 			out.state = m_state;
-			out.reason = L"[SelectGoal] start.";
+			out.reason = m_params.grabTestOnly ? L"[Acquire] grab test start." : L"[SelectGoal] start.";
 		}
 		break;
 	}
 	case State::SelectGoal:
 	{
+		if (m_params.grabTestOnly)
+		{
+			m_state = State::Acquire;
+			out.state = m_state;
+			out.requestVisionMode = 7; // VisionService::Mode::Gemini
+			out.requestGeminiReset = true;
+			out.reason = L"[Acquire] grab test redirect.";
+			break;
+		}
 		out.active = true;
 		out.vsEnable = false;
-		// 需要 HandLandmarks 来得到手势/指向，并用 Detector 候选做 PointPick
 		out.requestVisionMode = 6; // VisionService::Mode::HandLandmarks
-		out.requestPointPickTarget = 0; // Detector candidates only
+		out.requestPointPickTarget = 0; 
 
-		// Follow hand: keep fingertip near center (u,v in HandLandmarks mode is fingertip)
-		if (in.pKc && in.pMc && in.hasObs && in.obs.hasTargetPx && CanIssueMoveNow(m_params, now, m_lockedUntilMs, m_lastCmdMs))
+		// 锁定后夹爪提示（张合一次）：固定张合量200（保证明显）
+		// 策略：先向"开"方向移动，再回到原位（视觉上更明显）
+		bool cueMoveIssued = false;
+		bool confirmMoveIssued = false;
+		if (in.pickState != 2)
 		{
-			const auto step = SeeAndFetchJointPolicy::ComputeFindStep(m_params, *in.pKc, *in.pMc, in.arm, in.obs, in.frameW, in.frameH);
-			if (step.ok && step.hasMove)
-			{
-				out.hasMove = true;
-				out.moveTimeMs = step.moveTimeMs;
-				out.jointToPos = step.jointToPos;
-				m_lastCmdMs = now;
-				m_lockedUntilMs = now + (ULONGLONG)std::max(0, m_params.timing.lockAfterMoveMs);
-			}
-		}
-
-		// Confirmed: record initial_pos and proceed to selecting terminal red dot
-		if (in.pickState == 3 && in.hasPickBox)
-		{
-			if (!in.hasServoPos)
-			{
-				m_state = State::Abort;
-				out.state = m_state;
-				out.active = false;
-				out.reason = L"[Abort] no servoPos for initial_pos.";
-				break;
-			}
-			m_initialPosePos = in.servoPos;
-			m_hasInitialPosePos = true;
-			// reset pick for next stage
-			out.requestPointPickReset = true;
-			m_state = State::SelectTerminal;
-			out.state = m_state;
-			out.reason = L"[SelectTerminal] goal confirmed; now pick red dot.";
+			m_lockCuePhase = 0;
+			m_lockCueBasePos = -1;
+			m_lockCueTargetPos = -1;
 		}
 		else
 		{
-			out.reason = L"[SelectGoal] point to object; pinch to confirm; open palm to cancel.";
+			// 锁定瞬间记录初始姿态
+			if (!m_hasInitialPosePos && in.hasServoPos)
+			{
+				m_initialPosePos = in.servoPos;
+				m_hasInitialPosePos = true;
+			}
+
+			const int j = std::max(1, std::min(MotionConfig::kJointCount, m_params.gripper.jointIndex));
+			const int openPos = m_params.gripper.openPos;
+			const int closePos = m_params.gripper.closePos;
+			const int moveTime = std::max(400, m_params.gripper.closeMoveTimeMs); // 增加时间让动作更明显
+
+			if (m_lockCuePhase == 0)
+			{
+				int basePos = (in.hasServoPos ? in.servoPos[(size_t)j] : -1);
+				if (basePos < 0) basePos = (openPos + closePos) / 2; // 默认中间位置
+				
+				// 固定张合量：先向"开"方向移动200（视觉上更明显）
+				const int delta = 200;
+				int targetPos;
+				if (closePos < openPos)
+				{
+					// close 值更小（如 close=350, open=650），向开方向是 +delta
+					targetPos = basePos + delta;
+				}
+				else
+				{
+					// close 值更大（如 close=650, open=350），向开方向是 -delta
+					targetPos = basePos - delta;
+				}
+				// 限制在合法范围
+				targetPos = std::max(0, std::min(1000, targetPos));
+				m_lockCueBasePos = basePos;
+				m_lockCueTargetPos = targetPos;
+			}
+
+			if (m_lockCuePhase == 0 && CanIssueMoveNow(m_params, now, m_lockedUntilMs, m_lastCmdMs))
+			{
+				out.hasMove = true;
+				out.moveTimeMs = moveTime;
+				out.jointToPos.clear();
+				out.jointToPos.push_back({ j, m_lockCueTargetPos });
+				m_lastCmdMs = now;
+				m_lockedUntilMs = now + (ULONGLONG)std::max(0, out.moveTimeMs);
+				m_lockCuePhase = 1;
+				cueMoveIssued = true;
+				allowMoveDuringPause = true;
+				out.pauseTracking = false; // 允许夹爪动作下发
+				out.reason = L"[SelectGoal] Locked: gripper cue (away).";
+			}
+			else if (m_lockCuePhase == 1 && now >= m_lockedUntilMs &&
+			         CanIssueMoveNow(m_params, now, m_lockedUntilMs, m_lastCmdMs))
+			{
+				out.hasMove = true;
+				out.moveTimeMs = moveTime;
+				out.jointToPos.clear();
+				out.jointToPos.push_back({ j, m_lockCueBasePos });
+				m_lastCmdMs = now;
+				m_lockedUntilMs = now + (ULONGLONG)std::max(0, out.moveTimeMs);
+				m_lockCuePhase = 2;
+				cueMoveIssued = true;
+				allowMoveDuringPause = true;
+				out.pauseTracking = false; // 允许夹爪动作下发
+				out.reason = L"[SelectGoal] Locked: gripper cue (back).";
+			}
 		}
+
+		// OpenPalm 取消：清除记录并从头开始
+		if (in.pickState == 4)
+		{
+			m_hasInitialPosePos = false;
+			for (int j = 0; j <= MotionConfig::kJointCount; j++) m_initialPosePos[(size_t)j] = -1;
+			m_lockCuePhase = 0;
+			m_lockCueBasePos = -1;
+			m_lockCueTargetPos = -1;
+			m_confirmOpenPhase = 0;
+			out.requestPointPickReset = true;
+			out.reason = L"[SelectGoal] Cancelled: reset and restart.";
+		}
+
+		// Pinch 确认：开爪到最大边界值，作为“已确认要抓取”的提示
+		if (in.pickState == 3)
+		{
+			const int j = std::max(1, std::min(MotionConfig::kJointCount, m_params.gripper.jointIndex));
+			const int openPos = m_params.gripper.openPos;
+			const int moveTime = std::max(400, m_params.gripper.closeMoveTimeMs);
+			if (m_confirmOpenPhase == 0 && CanIssueMoveNow(m_params, now, m_lockedUntilMs, m_lastCmdMs))
+			{
+				out.hasMove = true;
+				out.moveTimeMs = moveTime;
+				out.jointToPos.clear();
+				out.jointToPos.push_back({ j, openPos });
+				m_lastCmdMs = now;
+				m_lockedUntilMs = now + (ULONGLONG)std::max(0, out.moveTimeMs);
+				m_confirmOpenPhase = 1;
+				confirmMoveIssued = true;
+				allowMoveDuringPause = true;
+				out.pauseTracking = false;
+				out.reason = L"[SelectGoal] Confirmed: open gripper.";
+			}
+			else if (m_confirmOpenPhase == 1 && now >= m_lockedUntilMs)
+			{
+				m_confirmOpenPhase = 2;
+			}
+		}
+
+		// =========================================================
+		// [重写] 极简手势追踪逻辑
+		// 目标：仅使用 J1(水平) 和 J3(俯仰) 跟随手掌，严禁触碰其他关节
+		// =========================================================
+
+		// 1. 状态判断：未确认(3)且未取消(4)时允许跟随
+		const bool isTracking = (in.pickState < 3);
+		
+		if (!cueMoveIssued && !confirmMoveIssued && isTracking && in.pKc && in.pMc && in.hasObs && in.obs.hasTargetPx && 
+			CanIssueMoveNow(m_params, now, m_lockedUntilMs, m_lastCmdMs))
+		{
+			const double cx = (double)in.frameW * 0.5 + (double)m_params.find.centerOffsetU;
+			const double cy = (double)in.frameH * 0.5 + (double)m_params.find.centerOffsetV;
+			const double errU = in.obs.u - cx;
+			const double errV = in.obs.v - cy;
+
+			const int db = std::max(0, m_params.find.deadbandPx);
+			const bool inU = std::fabs(errU) <= (double)db;
+			const bool inV = std::fabs(errV) <= (double)db;
+
+			if (!inU || !inV)
+			{
+				std::vector<std::pair<int, int>> moves;
+				std::wstring moveWhy;
+
+				if (!inU)
+				{
+					const double step = StepFromPx(std::fabs(errU),
+					                               m_params.find.yaw_kDegPerPx,
+					                               m_params.find.yaw_minStepDeg,
+					                               m_params.find.yaw_maxStepDeg);
+					const double sgn = (errU > 0) ? 1.0 : -1.0;
+					const double delta = sgn * (double)m_params.find.signJ1FromErrU * step;
+
+					int pos = 0; 
+					std::wstring w;
+					if (SeeAndFetchJointPolicy::JointDeltaDegToServoPos(*in.pKc, *in.pMc, in.arm, 1, delta, pos, w))
+					{
+						const int curPos = in.servoPos[1];
+						const int minPosDelta = std::max(0, m_params.find.minServoPosChange);
+						if (curPos < 0 || minPosDelta <= 0 || std::abs(curPos - pos) >= minPosDelta)
+						{
+							moves.push_back({ 1, pos });
+							moveWhy += L"J1 ";
+						}
+					}
+				}
+
+				if (!inV)
+				{
+					double step = StepFromPx(std::fabs(errV),
+					                         m_params.find.pitch_kDegPerPx,
+					                         m_params.find.pitch_minStepDeg,
+					                         m_params.find.pitch_maxStepDeg);
+					if (m_params.find.maxPitchStepDeg > 0.0 && step > m_params.find.maxPitchStepDeg)
+					{
+						step = m_params.find.maxPitchStepDeg;
+					}
+
+					const double sgn = (errV > 0) ? 1.0 : -1.0;
+					const double delta = sgn * (double)m_params.find.signJ4FromErrV * step;
+
+					int pos = 0;
+					std::wstring w;
+					if (SeeAndFetchJointPolicy::JointDeltaDegToServoPos(*in.pKc, *in.pMc, in.arm, 4, delta, pos, w))
+					{
+						const int curPos = in.servoPos[4];
+						const int minPosDelta = std::max(0, m_params.find.minServoPosChange);
+						if (curPos < 0 || minPosDelta <= 0 || std::abs(curPos - pos) >= minPosDelta)
+						{
+							moves.push_back({ 4, pos });
+							moveWhy += L"J4 ";
+						}
+					}
+				}
+
+				if (!moves.empty())
+				{
+					out.hasMove = true;
+					out.moveTimeMs = std::max(30, m_params.timing.defaultMoveTimeMs);
+					out.jointToPos = moves;
+					m_lastCmdMs = now;
+					m_lockedUntilMs = now + (ULONGLONG)m_params.timing.lockAfterMoveMs;
+					out.reason = L"[SelectGoal] Tracking: " + moveWhy;
+				}
+				else
+				{
+					out.reason = L"[SelectGoal] In deadband or move too small.";
+				}
+			}
+			else
+			{
+				out.reason = L"[SelectGoal] Centered.";
+			}
+		}
+
+		// 交互提示
+		if (in.pickState == 3 && m_confirmOpenPhase >= 2) // Confirmed + cue done
+		{
+			// 只有确认后才跳转，且不再做任何自动对准，直接进下一步
+			// 若尚未记录，补记当前位置作为 "initial_pos"
+			if (!m_hasInitialPosePos && in.hasServoPos)
+			{
+				m_initialPosePos = in.servoPos;
+				m_hasInitialPosePos = true;
+			}
+			
+			// 跳过 FindGoalObject，直接进 SelectTerminal 或 Acquire
+			// 这里为了简化流程，假设用户确认就是想抓了 -> 进 Acquire 也可以
+			// 但原流程是选红点。我们保留 SelectTerminal 状态但清空逻辑?
+			// 暂时跳转到 SelectTerminal
+			m_state = State::SelectTerminal; 
+			out.requestPointPickReset = true;
+			out.state = m_state;
+			out.reason = L"[SelectTerminal] Goal confirmed. Now point to destination.";
+		}
+		else
+		{
+			if (!cueMoveIssued && !isTracking) out.reason = L"[SelectGoal] Open palm to track.";
+		}
+		break;
+	}
+	case State::FindGoalObject:
+	{
+		// [重写] 此状态已废弃/跳过，直接进 SelectTerminal
+		m_state = State::SelectTerminal;
+		out.state = m_state;
+		out.reason = L"[FindGoalObject] skipped -> SelectTerminal.";
 		break;
 	}
 	case State::SelectTerminal:
 	{
+		if (m_params.grabTestOnly)
+		{
+			m_state = State::Acquire;
+			out.state = m_state;
+			out.requestVisionMode = 7; // VisionService::Mode::Gemini
+			out.requestGeminiReset = true;
+			out.reason = L"[Acquire] grab test redirect.";
+			break;
+		}
 		out.active = true;
 		out.vsEnable = false;
-		// 仍用 HandLandmarks 获取手势，但 PointPick 目标改为“红点候选”
 		out.requestVisionMode = 6; // HandLandmarks
-		out.requestPointPickTarget = 1; // red dot
+		out.requestPointPickTarget = 0; // Gemini: 目标物识别
 
-		// Follow hand
-		if (in.pKc && in.pMc && in.hasObs && in.obs.hasTargetPx && CanIssueMoveNow(m_params, now, m_lockedUntilMs, m_lastCmdMs))
+		// [改] 终点阶段改为“跟手 + 指向锁定标记物（Gemini）”
+		// 1) 先跟随手指（同 SelectGoal）
+		// 2) Point -> Gemini 锁定标记物；锁定后记录终点姿态
+		const bool isTracking = (in.pickState < 3);
+		if (isTracking && in.pKc && in.pMc && in.hasObs && in.obs.hasTargetPx &&
+		    CanIssueMoveNow(m_params, now, m_lockedUntilMs, m_lastCmdMs))
 		{
-			const auto step = SeeAndFetchJointPolicy::ComputeFindStep(m_params, *in.pKc, *in.pMc, in.arm, in.obs, in.frameW, in.frameH);
-			if (step.ok && step.hasMove)
+			const double cx = (double)in.frameW * 0.5 + (double)m_params.find.centerOffsetU;
+			const double cy = (double)in.frameH * 0.5 + (double)m_params.find.centerOffsetV;
+			const double errU = in.obs.u - cx;
+			const double errV = in.obs.v - cy;
+
+			const int db = std::max(0, m_params.find.deadbandPx);
+			if (std::fabs(errU) > db || std::fabs(errV) > db)
 			{
-				out.hasMove = true;
-				out.moveTimeMs = step.moveTimeMs;
-				out.jointToPos = step.jointToPos;
-				m_lastCmdMs = now;
-				m_lockedUntilMs = now + (ULONGLONG)std::max(0, m_params.timing.lockAfterMoveMs);
+				std::vector<std::pair<int, int>> moves;
+				if (std::fabs(errU) > db)
+				{
+					const double step = StepFromPx(std::fabs(errU),
+					                               m_params.find.yaw_kDegPerPx,
+					                               m_params.find.yaw_minStepDeg,
+					                               m_params.find.yaw_maxStepDeg);
+					const double sgn = (errU > 0) ? 1.0 : -1.0;
+					const double delta = sgn * (double)m_params.find.signJ1FromErrU * step;
+
+					int pos = 0; std::wstring w;
+					if (SeeAndFetchJointPolicy::JointDeltaDegToServoPos(*in.pKc, *in.pMc, in.arm, 1, delta, pos, w))
+					{
+						const int cur = in.servoPos[1];
+						const int minPosDelta = std::max(0, m_params.find.minServoPosChange);
+						if (cur < 0 || minPosDelta <= 0 || std::abs(cur - pos) >= minPosDelta) moves.push_back({ 1, pos });
+					}
+				}
+
+				if (std::fabs(errV) > db)
+				{
+					double step = StepFromPx(std::fabs(errV),
+					                         m_params.find.pitch_kDegPerPx,
+					                         m_params.find.pitch_minStepDeg,
+					                         m_params.find.pitch_maxStepDeg);
+					if (m_params.find.maxPitchStepDeg > 0.0 && step > m_params.find.maxPitchStepDeg)
+					{
+						step = m_params.find.maxPitchStepDeg;
+					}
+
+					const double sgn = (errV > 0) ? 1.0 : -1.0;
+					const double delta = sgn * (double)m_params.find.signJ4FromErrV * step;
+
+					int pos = 0; std::wstring w;
+					if (SeeAndFetchJointPolicy::JointDeltaDegToServoPos(*in.pKc, *in.pMc, in.arm, 4, delta, pos, w))
+					{
+						const int cur = in.servoPos[4];
+						const int minPosDelta = std::max(0, m_params.find.minServoPosChange);
+						if (cur < 0 || minPosDelta <= 0 || std::abs(cur - pos) >= minPosDelta) moves.push_back({ 4, pos });
+					}
+				}
+
+				if (!moves.empty())
+				{
+					out.hasMove = true;
+					out.moveTimeMs = std::max(30, m_params.timing.defaultMoveTimeMs);
+					out.jointToPos = moves;
+					m_lastCmdMs = now;
+					m_lockedUntilMs = now + (ULONGLONG)m_params.timing.lockAfterMoveMs;
+					out.reason = L"[SelectTerminal] Tracking hand (terminal).";
+				}
 			}
 		}
 
-		// Confirmed: record terminal_pos and go back to initial_pos before starting grab
-		if (in.pickState == 3 && in.hasPickBox)
+		// 锁定标记物后，记录“瞄准终点”姿态
+		if (in.pickState == 2 && in.hasServoPos)
 		{
-			if (!in.hasServoPos)
-			{
-				m_state = State::Abort;
-				out.state = m_state;
-				out.active = false;
-				out.reason = L"[Abort] no servoPos for terminal_pos.";
-				break;
-			}
 			m_terminalPosePos = in.servoPos;
 			m_hasTerminalPosePos = true;
+		}
+
+		// 确认逻辑
+		if (in.pickState == 3) // Pinch to confirm terminal
+		{
+			if (!m_hasTerminalPosePos && in.hasServoPos)
+			{
+				m_terminalPosePos = in.servoPos;
+				m_hasTerminalPosePos = true;
+			}
+			// 确认后直接去 GoAutoHome (准备抓取)
+			m_state = State::GoAutoHome;
 			out.requestPointPickReset = true;
-			m_state = State::GoInitialPose;
 			out.state = m_state;
-			m_goPosePhase = 0;
-			out.reason = L"[GoInitialPose] terminal confirmed; go back to initial_pos.";
+			out.reason = L"[GoAutoHome] Terminal confirmed.";
 		}
 		else
 		{
-			out.reason = L"[SelectTerminal] point to red dot; pinch to confirm; open palm to cancel.";
+			out.reason = L"[SelectTerminal] Point to marker, pinch to confirm.";
 		}
 		break;
 	}
-	case State::GoInitialPose:
+	case State::GoAutoHome:
 	{
+		// [重写] 极简自动归位
+		// 不再等待和检测读回，为了流畅性，直接发命令然后跳转
+		// 仍然保留 J1-J5 限制
 		out.active = true;
 		out.vsEnable = false;
 
-		if (!m_hasInitialPosePos)
+		if (!m_hasAutoHomePos)
 		{
-			m_state = State::Abort;
+			m_state = State::ReadyToGrasp;
 			out.state = m_state;
-			out.active = false;
-			out.reason = L"[Abort] missing initial_pos.";
+			out.reason = L"[ReadyToGrasp] No AutoHome. Wait confirm.";
 			break;
 		}
 
-		// issue one absolute move, then wait for lock
 		if (m_goPosePhase == 0 && CanIssueMoveNow(m_params, now, m_lockedUntilMs, m_lastCmdMs))
 		{
 			out.hasMove = true;
 			out.moveTimeMs = std::max(200, m_params.ret.returnTimeMs);
 			out.jointToPos.clear();
-			for (int j = 1; j <= MotionConfig::kJointCount; j++)
+			for (int j = 1; j <= 5; j++) // 仅 J1-J5
 			{
-				const int p = m_initialPosePos[(size_t)j];
+				const int p = m_autoHomePos[(size_t)j];
 				if (p >= 0) out.jointToPos.push_back({ j, p });
 			}
 			m_lastCmdMs = now;
 			m_lockedUntilMs = now + (ULONGLONG)std::max(0, out.moveTimeMs);
 			m_goPosePhase = 1;
-			out.reason = L"[GoInitialPose] moving...";
+			out.reason = L"[GoAutoHome] Moving...";
 			break;
 		}
 
 		if (m_goPosePhase == 1 && m_lockedUntilMs != 0 && now >= m_lockedUntilMs)
 		{
-			// start normal tracking/grab
-			m_state = State::Acquire;
+			m_state = State::ReadyToGrasp;
 			out.state = m_state;
-			m_stableFrames = 0;
-			m_lostFrames = 0;
-			m_goPosePhase = 0; // allow GoTerminalPose later
-			out.reason = L"[Acquire] start after go initial.";
+			m_goPosePhase = 0;
+			out.reason = L"[ReadyToGrasp] AutoHome done. Wait confirm.";
 			break;
 		}
 
-		out.reason = L"[GoInitialPose] waiting...";
+		out.reason = L"[GoAutoHome] Pacing...";
+		break;
+	}
+	case State::ReadyToGrasp:
+	{
+		out.active = true;
+		out.vsEnable = false;
+		out.lockManualJog = false; // 允许手动自由检查
+		out.reason = L"[ReadyToGrasp] Confirm to start grasp.";
+
+		if (cmd.confirm)
+		{
+			m_state = State::Acquire;
+			if (m_params.grabTestOnly)
+			{
+				out.requestVisionMode = 7; // VisionService::Mode::Gemini
+				out.requestGeminiReset = true;
+			}
+			out.state = m_state;
+			out.reason = L"[Acquire] Start grasp flow.";
+		}
 		break;
 	}
 	case State::Acquire:
@@ -366,6 +767,10 @@ bool SeeAndFetchStateMachine::Tick(const Input& in, const UserCommand& cmd, Outp
 		{
 			m_state = State::Track;
 			out.state = m_state;
+			if (m_params.grabTestOnly)
+			{
+				out.requestGeminiReset = true;
+			}
 			out.reason = L"[Track] locked.";
 		}
 		else
@@ -447,6 +852,10 @@ bool SeeAndFetchStateMachine::Tick(const Input& in, const UserCommand& cmd, Outp
 		{
 			m_state = State::Approach;
 			out.state = m_state;
+			if (m_params.grabTestOnly)
+			{
+				out.requestGeminiReset = true;
+			}
 			m_depthStableFrames = 0;
 			m_hasLastDepthMm = false;
 			m_lastDepthMm = 0.0;
@@ -632,6 +1041,10 @@ bool SeeAndFetchStateMachine::Tick(const Input& in, const UserCommand& cmd, Outp
 		{
 			m_state = State::Grasp;
 			out.state = m_state;
+			if (m_params.grabTestOnly)
+			{
+				out.requestGeminiReset = true;
+			}
 			m_gripSteps = 0;
 			m_gripCmdPos = 0;
 			m_graspAttempt = std::max(0, m_graspAttempt);
@@ -804,15 +1217,23 @@ bool SeeAndFetchStateMachine::Tick(const Input& in, const UserCommand& cmd, Outp
 			out.state = m_state;
 			m_retreatDone = 0;
 			m_retreatTotalSteps = std::max(0, m_params.place.retreatSteps);
-			// 抓取后优先移动到 terminal_pos（若已记录），再进入 Place
-			if (m_hasTerminalPosePos)
+			if (m_params.grabTestOnly)
 			{
-				m_retreatNextState = State::GoTerminalPose;
+				m_retreatNextState = State::ReturnHome;
 				m_goPosePhase = 0;
 			}
 			else
 			{
-				m_retreatNextState = State::Place;
+				// 抓取后优先移动到 terminal_pos（若已记录），再进入 Place
+				if (m_hasTerminalPosePos)
+				{
+					m_retreatNextState = State::GoTerminalPose;
+					m_goPosePhase = 0;
+				}
+				else
+				{
+					m_retreatNextState = State::Place;
+				}
 			}
 			// retreat is opposite direction of approach advance (post-grasp lift away)
 			m_retreatDeltaDeg = -(double)m_params.approach.signJ2Advance * std::max(0.0, m_params.approach.j2AdvanceStepDeg);
@@ -845,7 +1266,18 @@ bool SeeAndFetchStateMachine::Tick(const Input& in, const UserCommand& cmd, Outp
 				m_hasBaseBoxArea = false;
 				m_baseBoxAreaPx2 = 0;
 			}
-			out.reason = (m_state == State::Track) ? L"[Track] retry." : L"[Place] enter.";
+			if (m_state == State::Track)
+			{
+				out.reason = L"[Track] retry.";
+			}
+			else if (m_state == State::ReturnHome)
+			{
+				out.reason = L"[ReturnHome] enter.";
+			}
+			else
+			{
+				out.reason = L"[Place] enter.";
+			}
 			break;
 		}
 
@@ -900,7 +1332,8 @@ bool SeeAndFetchStateMachine::Tick(const Input& in, const UserCommand& cmd, Outp
 			out.hasMove = true;
 			out.moveTimeMs = std::max(200, m_params.ret.returnTimeMs);
 			out.jointToPos.clear();
-			for (int j = 1; j <= MotionConfig::kJointCount; j++)
+			// 只恢复 J1-J5 的位置，不包括夹爪（J6），避免在移动到终点时意外开合夹爪
+			for (int j = 1; j <= 5; j++)
 			{
 				const int p = m_terminalPosePos[(size_t)j];
 				if (p >= 0) out.jointToPos.push_back({ j, p });
@@ -1218,7 +1651,8 @@ bool SeeAndFetchStateMachine::Tick(const Input& in, const UserCommand& cmd, Outp
 			out.hasMove = true;
 			out.moveTimeMs = std::max(200, m_params.ret.returnTimeMs);
 			out.jointToPos.clear();
-			for (int j = 1; j <= MotionConfig::kJointCount; j++)
+			// 只恢复 J1-J5 的位置，不包括夹爪（J6），避免在返回时意外开合夹爪
+			for (int j = 1; j <= 5; j++)
 			{
 				const int p = m_startPosePos[(size_t)j];
 				if (p >= 0) out.jointToPos.push_back({ j, p });
@@ -1260,6 +1694,15 @@ bool SeeAndFetchStateMachine::Tick(const Input& in, const UserCommand& cmd, Outp
 	}
 
 	out.state = m_state;
+	// 暂停时仅抑制舵机输出，不影响搜索/状态推进
+	if (pauseActive && !allowMoveDuringPause)
+	{
+		out.hasMove = false;
+		out.jointToPos.clear();
+		out.reason = (m_state == State::SelectTerminal)
+			? L"[SelectTerminal] Paused: suppress servo output."
+			: L"[SelectGoal] Paused: suppress servo output.";
+	}
 	if (m_hasCachedPlanePoint)
 	{
 		out.hasCachedPlanePoint = true;

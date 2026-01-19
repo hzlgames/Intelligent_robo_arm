@@ -19,6 +19,7 @@
 #include <mfapi.h>
 #include <mfidl.h>
 #include <cmath>
+#include <cstdio>
 #include <algorithm>
 #include <climits>
 #include <vector>
@@ -232,17 +233,18 @@ void C智能机械臂Dlg::DoDataExchange(CDataExchange* pDX)
 	DDX_Control(pDX, IDC_MAIN_LBL_VISION_ALGO, m_staticVisionAlgo);
 	DDX_Control(pDX, IDC_MAIN_COMBO_VISION_ALGO, m_comboVisionAlgo);
 
-	// ===== 主界面：Jog区域控件（先搭框架） =====
-	DDX_Control(pDX, IDC_MAIN_GROUP_JOG, m_grpMainJog);
+	// ===== 主界面：状态区域控件 =====
 	DDX_Control(pDX, IDC_MAIN_GROUP_STATUS, m_grpMainStatus);
-	DDX_Control(pDX, IDC_MAIN_STATIC_JOGPAD, m_staticMainJogPad);
-	DDX_Control(pDX, IDC_MAIN_SLIDER_SPEED_MM, m_sliderSpeedMm);
-	DDX_Control(pDX, IDC_MAIN_SLIDER_SPEED_PITCH, m_sliderSpeedPitch);
+
+	// ===== 主界面：姿态可视化面板 =====
+	DDX_Control(pDX, IDC_MAIN_GROUP_POSTURE, m_grpMainPosture);
+	DDX_Control(pDX, IDC_MAIN_STATIC_POSTURE, m_ctrlPosture);
 	DDX_Control(pDX, IDC_MAIN_STATIC_POSE, m_staticMainPose);
 	DDX_Control(pDX, IDC_MAIN_BTN_EMERGENCY_STOP, m_btnEmergencyStop);
 
 	// ===== 主界面：See&Fetch（自动流程） =====
 	DDX_Control(pDX, IDC_MAIN_CHECK_SF_ENABLE, m_chkSfEnable);
+	DDX_Control(pDX, IDC_MAIN_CHECK_SF_GRABTEST, m_chkSfGrabTest);
 	DDX_Control(pDX, IDC_MAIN_BTN_SF_START, m_btnSfStart);
 	DDX_Control(pDX, IDC_MAIN_BTN_SF_CANCEL, m_btnSfCancel);
 	DDX_Control(pDX, IDC_MAIN_BTN_SF_ESTOP, m_btnSfEStop);
@@ -283,6 +285,7 @@ BEGIN_MESSAGE_MAP(C智能机械臂Dlg, CDialogEx)
 
 	// 主界面：See&Fetch
 	ON_BN_CLICKED(IDC_MAIN_CHECK_SF_ENABLE, &C智能机械臂Dlg::OnBnClickedSfEnable)
+	ON_BN_CLICKED(IDC_MAIN_CHECK_SF_GRABTEST, &C智能机械臂Dlg::OnBnClickedSfGrabTest)
 	ON_BN_CLICKED(IDC_MAIN_BTN_SF_START, &C智能机械臂Dlg::OnBnClickedSfStart)
 	ON_BN_CLICKED(IDC_MAIN_BTN_SF_CANCEL, &C智能机械臂Dlg::OnBnClickedSfCancel)
 	ON_BN_CLICKED(IDC_MAIN_BTN_SF_ESTOP, &C智能机械臂Dlg::OnBnClickedSfEStop)
@@ -354,14 +357,6 @@ BOOL C智能机械臂Dlg::OnInitDialog()
 	ApplyMainOverlaySettings();
 	UpdateMainCamStatusText();
 
-	// Jog 速度滑条（先提供UI；后续 JogController 读这些参数）
-	m_sliderSpeedMm.SetRange(1, 200);       // 1~200 mm/s
-	m_sliderSpeedMm.SetTicFreq(10);
-	m_sliderSpeedMm.SetPos(50);
-	m_sliderSpeedPitch.SetRange(1, 180);    // 1~180 deg/s
-	m_sliderSpeedPitch.SetTicFreq(10);
-	m_sliderSpeedPitch.SetPos(30);
-
 	// ===== 视觉跟随（Visual Servo）UI 初始化 =====
 	m_comboVsMode.ResetContent();
 	m_comboVsMode.AddString(L"居中(Center)");
@@ -387,58 +382,55 @@ BOOL C智能机械臂Dlg::OnInitDialog()
 		m_comboVisionAlgo.AddString(L"Detector(ONNX/OpenCV DNN)");  // 5
 		m_comboVisionAlgo.AddString(L"双色贴纸(HandSticker)");      // 6
 		m_comboVisionAlgo.AddString(L"手部关键点(HandLandmarks)");  // 7
+		m_comboVisionAlgo.AddString(L"Gemini(云端)");                // 8
 		m_comboVisionAlgo.SetCurSel(1); // 默认 Auto（后续 LoadVisionSettingsFromProfile 会覆盖）
 	}
 
-	// ===== 主界面：运动与Jog 初始化 =====
+	// ===== 主界面：运动初始化 =====
 	m_motion.LoadConfig();
 	m_kc.LoadAll();
-	m_jog.Bind(&m_motion, &m_kc);
+
+	// ===== 主界面：姿态可视化初始化 =====
+	if (m_ctrlPosture.GetSafeHwnd())
+	{
+		const auto& links = m_kc.Links();
+		m_ctrlPosture.SetLinkLengths(links.L_base, links.L_arm1, links.L_arm2, links.L_wrist);
+	}
 
 	// ===== VisionService 初始化（独立视觉线程）=====
-	m_vision.SetVisualServo(&m_vs);
 	m_vision.SetPreview(m_pMainPreview); // 可能为空；StartMainPreview 后会更新
 	LoadVisionSettingsFromProfile();
 	LoadSeeAndFetchSettingsFromProfile();
+	LoadGrabTestSettingsFromProfile();
 	m_tool.LoadAll();
+	if (m_chkSfGrabTest.GetSafeHwnd())
+	{
+		const bool grabTest = AfxGetApp()->GetProfileInt(L"GrabTest", L"Enabled", 0) ? true : false;
+		m_chkSfGrabTest.SetCheck(grabTest ? BST_CHECKED : BST_UNCHECKED);
+		if (grabTest)
+		{
+			ApplyGrabTestVisionMode(true);
+		}
+	}
 	// 识别启用由 profile/checkbox 控制；默认开启，但与 VS Enable 解耦
 	m_vision.SetEnabled(m_chkVisionProcEnable.GetSafeHwnd() && (m_chkVisionProcEnable.GetCheck() == BST_CHECKED) && m_visionAlgoEnabled);
 	m_vision.Start();
 
-	// 以“当前姿态估计（优先回读，否则home）”的 FK 结果作为初始目标，避免一开始就不可达
+	// 初始姿态显示：优先使用读回估计（无 Jog 目标）
 	{
-		ArmKinematics::JointAnglesRad qCur{};
-		for (int j = 0; j <= ArmKinematics::kJointCount; j++) qCur.q[j] = 0.0;
-		for (int j = 1; j <= ArmKinematics::kJointCount; j++)
-		{
-			const auto& jc = m_motion.Config().Get(j);
-			int pos = jc.homePos;
-			if (jc.servoId >= 1 && jc.servoId <= 6)
-			{
-				uint16_t rb = 0;
-				if (ArmCommsService::Instance().GetLastReadPos((uint8_t)jc.servoId, rb))
-				{
-					pos = (int)rb;
-				}
-			}
-			double rad = 0.0;
-			if (!ArmKinematics::ServoPosToJointRad(m_kc, &m_motion.Config(), j, pos, rad))
-			{
-				rad = 0.0;
-			}
-			qCur.q[j] = rad;
-		}
-		const auto pose0 = ArmKinematics::ForwardKinematics(m_kc, qCur);
-		m_jog.SetTargetPose(pose0);
+		ArmStateEstimator::ArmState st{};
+		(void)ArmStateEstimator::Estimate(m_motion, m_kc, st, nullptr);
+		const auto pose0 = st.joint5PoseBase;
 		CString s;
-		s.Format(L"Pose: (X=%.0f,Y=%.0f,Z=%.0f,p=%.1f)", pose0.x_mm, pose0.y_mm, pose0.z_mm, pose0.pitch_deg);
+		s.Format(L"Pose: (X=%.0f,Y=%.0f,Z=%.0f,p=%.1f)",
+		         pose0.x_mm, pose0.y_mm, pose0.z_mm, pose0.pitch_deg);
 		m_staticMainPose.SetWindowTextW(s);
 	}
 
 	// FPS 计时器（每秒刷新一次）
 	m_timerFps = SetTimer(1, 1000, nullptr);
 
-	// Jog Tick（20Hz）
+	// 运动 Tick（20Hz）
 	SetTimer(2, 50, nullptr);
 
 	return TRUE;  // 除非将焦点设置到控件，否则返回 TRUE
@@ -465,6 +457,7 @@ void C智能机械臂Dlg::SyncVisionAlgoUiFromState()
 	case VisionService::Mode::Detector: sel = 5; break;
 	case VisionService::Mode::HandSticker: sel = 6; break;
 	case VisionService::Mode::HandLandmarks: sel = 7; break;
+	case VisionService::Mode::Gemini: sel = 8; break;
 	default: sel = 1; break;
 	}
 	m_comboVisionAlgo.SetCurSel(sel);
@@ -501,6 +494,7 @@ void C智能机械臂Dlg::LoadVisionSettingsFromProfile()
 	else if (mode == 4) m = VisionService::Mode::Detector;
 	else if (mode == 5) m = VisionService::Mode::HandSticker;
 	else if (mode == 6) m = VisionService::Mode::HandLandmarks;
+	else if (mode == 7) m = VisionService::Mode::Gemini;
 	m_vision.SetMode(m);
 	m_visionAlgoMode = m;
 	SyncVisionAlgoUiFromState();
@@ -533,6 +527,10 @@ void C智能机械臂Dlg::LoadVisionSettingsFromProfile()
 		const int iouMilli = app->GetProfileInt(L"Vision\\PointPick", L"IouSame_milli", (int)std::lround(vp.pointPickIouSame * 1000.0));
 		vp.pointPickIouSame = (double)iouMilli / 1000.0;
 	}
+	vp.geminiApiKey = std::wstring(app->GetProfileString(L"Vision\\Gemini", L"ApiKey", L"").GetString());
+	vp.geminiModel = std::wstring(app->GetProfileString(L"Vision\\Gemini", L"Model", L"gemini-3-flash-preview").GetString());
+	vp.geminiRequestIntervalMs = app->GetProfileInt(L"Vision\\Gemini", L"IntervalMs", vp.geminiRequestIntervalMs);
+	vp.geminiProxy = std::wstring(app->GetProfileString(L"Vision\\Gemini", L"Proxy", L"").GetString());
 	m_vision.SetParams(vp);
 
 	// Detector params
@@ -674,6 +672,8 @@ void C智能机械臂Dlg::LoadSeeAndFetchSettingsFromProfile()
 
 	SeeAndFetchStateMachine::Params sp;
 
+	// 注：方向由标定数据决定，不再需要符号设置
+
 	// Global
 	sp.preferArucoDuringAuto = app->GetProfileInt(L"SeeAndFetch", L"PreferArucoDuringAuto", 1) ? true : false;
 	sp.lostFramesToAbort = app->GetProfileInt(L"SeeAndFetch", L"LostFramesToAbort", sp.lostFramesToAbort);
@@ -706,9 +706,28 @@ void C智能机械臂Dlg::LoadSeeAndFetchSettingsFromProfile()
 		const int j4pref = app->GetProfileInt(L"SeeAndFetch\\Find", L"J4PreferAbsDeg_milli", (int)std::lround(sp.find.j4PreferAbsDeg * 1000.0));
 		sp.find.j4PreferAbsDeg = (double)j4pref / 1000.0;
 
-		sp.find.signJ1FromErrU = app->GetProfileInt(L"SeeAndFetch\\Find", L"SignJ1FromErrU", sp.find.signJ1FromErrU);
-		sp.find.signJ4FromErrV = app->GetProfileInt(L"SeeAndFetch\\Find", L"SignJ4FromErrV", sp.find.signJ4FromErrV);
-		sp.find.signJ3FromErrV = app->GetProfileInt(L"SeeAndFetch\\Find", L"SignJ3FromErrV", sp.find.signJ3FromErrV);
+		// J3/J4 切换滞后：避免在边界附近频繁切换导致方向抖动
+		const int j4hyst = app->GetProfileInt(L"SeeAndFetch\\Find", L"J4SwitchHysteresisDeg_milli", (int)std::lround(sp.find.j4SwitchHysteresisDeg * 1000.0));
+		sp.find.j4SwitchHysteresisDeg = (double)j4hyst / 1000.0;
+
+		// 方向符号：signJ1FromErrU 默认 -1（相机镜像补偿），其他保持 +1
+		// 用户可通过配置覆盖这些值
+		// 修改：J3/J4 默认也改为 -1，因為 errV>0 (下方) 需要减小 Pitch (低头)
+		// [修正] J3 与 errV 同向时应“低头”，默认设为 -1
+		sp.find.signJ1FromErrU = app->GetProfileInt(L"SeeAndFetch\\Find", L"SignJ1FromErrU", -1);
+		sp.find.signJ4FromErrV = app->GetProfileInt(L"SeeAndFetch\\Find", L"SignJ4FromErrV", -1);
+		sp.find.signJ3FromErrV = app->GetProfileInt(L"SeeAndFetch\\Find", L"SignJ3FromErrV", -1);
+
+		// 单步 pitch 变化最大限制
+		const int maxPitchMilli = app->GetProfileInt(L"SeeAndFetch\\Find", L"MaxPitchStepDeg_milli", (int)std::lround(sp.find.maxPitchStepDeg * 1000.0));
+		sp.find.maxPitchStepDeg = (double)maxPitchMilli / 1000.0;
+
+		// 中心偏移量
+		sp.find.centerOffsetU = app->GetProfileInt(L"SeeAndFetch\\Find", L"CenterOffsetU", sp.find.centerOffsetU);
+		sp.find.centerOffsetV = app->GetProfileInt(L"SeeAndFetch\\Find", L"CenterOffsetV", sp.find.centerOffsetV);
+
+		// 舵机位置最小变化阈值（减少小变化指令导致的卡顿）
+		sp.find.minServoPosChange = app->GetProfileInt(L"SeeAndFetch\\Find", L"MinServoPosChange", sp.find.minServoPosChange);
 	}
 
 	// Approach
@@ -733,7 +752,8 @@ void C智能机械臂Dlg::LoadSeeAndFetchSettingsFromProfile()
 		const int j2step = app->GetProfileInt(L"SeeAndFetch\\Approach", L"J2AdvanceStepDeg_milli", (int)std::lround(sp.approach.j2AdvanceStepDeg * 1000.0));
 		sp.approach.j2AdvanceStepDeg = (double)j2step / 1000.0;
 	}
-	sp.approach.signJ2Advance = app->GetProfileInt(L"SeeAndFetch\\Approach", L"SignJ2Advance", sp.approach.signJ2Advance);
+	// 注：方向由标定数据决定，符号固定为 +1
+	sp.approach.signJ2Advance = +1;
 	sp.approach.enableJ1FineTune = app->GetProfileInt(L"SeeAndFetch\\Approach", L"EnableJ1FineTune", sp.approach.enableJ1FineTune ? 1 : 0) ? true : false;
 
 	// Gripper
@@ -773,7 +793,8 @@ void C智能机械臂Dlg::LoadSeeAndFetchSettingsFromProfile()
 		const int mdeg = app->GetProfileInt(L"SeeAndFetch\\Place", L"J2DownStepDeg_milli", (int)std::lround(sp.place.j2DownStepDeg * 1000.0));
 		sp.place.j2DownStepDeg = (double)mdeg / 1000.0;
 	}
-	sp.place.signJ2Down = app->GetProfileInt(L"SeeAndFetch\\Place", L"SignJ2Down", sp.place.signJ2Down);
+	// 注：方向由标定数据决定，符号固定为 +1
+	sp.place.signJ2Down = +1;
 	sp.place.maxAttempts = app->GetProfileInt(L"SeeAndFetch\\Place", L"MaxAttempts", sp.place.maxAttempts);
 	sp.place.retryRetreatSteps = app->GetProfileInt(L"SeeAndFetch\\Place", L"RetryRetreatSteps", sp.place.retryRetreatSteps);
 	sp.place.retreatSteps = app->GetProfileInt(L"SeeAndFetch\\Place", L"RetreatSteps", sp.place.retreatSteps);
@@ -783,6 +804,75 @@ void C智能机械臂Dlg::LoadSeeAndFetchSettingsFromProfile()
 	m_sf.SetParams(sp);
 }
 
+void C智能机械臂Dlg::LoadGrabTestSettingsFromProfile()
+{
+	CWinApp* app = AfxGetApp();
+	if (!app) return;
+
+	GrabTestController::Params gp;
+	gp.lostFramesToAbort = app->GetProfileInt(L"GrabTest", L"LostFramesToAbort", gp.lostFramesToAbort);
+	gp.acquireStableFrames = app->GetProfileInt(L"GrabTest", L"AcquireStableFrames", gp.acquireStableFrames);
+
+	gp.timing.minCommandIntervalMs = app->GetProfileInt(L"GrabTest\\Timing", L"MinCommandIntervalMs", gp.timing.minCommandIntervalMs);
+	gp.timing.defaultMoveTimeMs = app->GetProfileInt(L"GrabTest\\Timing", L"DefaultMoveTimeMs", gp.timing.defaultMoveTimeMs);
+	gp.timing.lockAfterMoveMs = app->GetProfileInt(L"GrabTest\\Timing", L"LockAfterMoveMs", gp.timing.lockAfterMoveMs);
+
+	gp.find.deadbandPx = app->GetProfileInt(L"GrabTest\\Find", L"DeadbandPx", gp.find.deadbandPx);
+	gp.find.coarseCenterPx = app->GetProfileInt(L"GrabTest\\Find", L"CoarseCenterPx", gp.find.coarseCenterPx);
+	gp.find.stableCenterFrames = app->GetProfileInt(L"GrabTest\\Find", L"StableCenterFrames", gp.find.stableCenterFrames);
+	{
+		const int yawK = app->GetProfileInt(L"GrabTest\\Find", L"Yaw_kDegPerPx_milli", (int)std::lround(gp.find.yaw_kDegPerPx * 1000.0));
+		gp.find.yaw_kDegPerPx = (double)yawK / 1000.0;
+		const int yawMin = app->GetProfileInt(L"GrabTest\\Find", L"Yaw_MinStepDeg_milli", (int)std::lround(gp.find.yaw_minStepDeg * 1000.0));
+		const int yawMax = app->GetProfileInt(L"GrabTest\\Find", L"Yaw_MaxStepDeg_milli", (int)std::lround(gp.find.yaw_maxStepDeg * 1000.0));
+		gp.find.yaw_minStepDeg = (double)yawMin / 1000.0;
+		gp.find.yaw_maxStepDeg = (double)yawMax / 1000.0;
+
+		const int pitK = app->GetProfileInt(L"GrabTest\\Find", L"Pitch_kDegPerPx_milli", (int)std::lround(gp.find.pitch_kDegPerPx * 1000.0));
+		gp.find.pitch_kDegPerPx = (double)pitK / 1000.0;
+		const int pitMin = app->GetProfileInt(L"GrabTest\\Find", L"Pitch_MinStepDeg_milli", (int)std::lround(gp.find.pitch_minStepDeg * 1000.0));
+		const int pitMax = app->GetProfileInt(L"GrabTest\\Find", L"Pitch_MaxStepDeg_milli", (int)std::lround(gp.find.pitch_maxStepDeg * 1000.0));
+		gp.find.pitch_minStepDeg = (double)pitMin / 1000.0;
+		gp.find.pitch_maxStepDeg = (double)pitMax / 1000.0;
+
+		const int maxPitchMilli = app->GetProfileInt(L"GrabTest\\Find", L"MaxPitchStepDeg_milli", (int)std::lround(gp.find.maxPitchStepDeg * 1000.0));
+		gp.find.maxPitchStepDeg = (double)maxPitchMilli / 1000.0;
+
+		gp.find.centerOffsetU = app->GetProfileInt(L"GrabTest\\Find", L"CenterOffsetU", gp.find.centerOffsetU);
+		gp.find.centerOffsetV = app->GetProfileInt(L"GrabTest\\Find", L"CenterOffsetV", gp.find.centerOffsetV);
+		gp.find.minServoPosChange = app->GetProfileInt(L"GrabTest\\Find", L"MinServoPosChange", gp.find.minServoPosChange);
+		gp.find.signJ1FromErrU = app->GetProfileInt(L"GrabTest\\Find", L"SignJ1FromErrU", gp.find.signJ1FromErrU);
+		gp.find.signJ4FromErrV = app->GetProfileInt(L"GrabTest\\Find", L"SignJ4FromErrV", gp.find.signJ4FromErrV);
+		const int j3K = app->GetProfileInt(L"GrabTest\\Find", L"J3_kDegPerPx_milli", (int)std::lround(gp.find.j3_kDegPerPx * 1000.0));
+		gp.find.j3_kDegPerPx = (double)j3K / 1000.0;
+		const int j3Min = app->GetProfileInt(L"GrabTest\\Find", L"J3_MinStepDeg_milli", (int)std::lround(gp.find.j3_minStepDeg * 1000.0));
+		const int j3Max = app->GetProfileInt(L"GrabTest\\Find", L"J3_MaxStepDeg_milli", (int)std::lround(gp.find.j3_maxStepDeg * 1000.0));
+		gp.find.j3_minStepDeg = (double)j3Min / 1000.0;
+		gp.find.j3_maxStepDeg = (double)j3Max / 1000.0;
+		gp.find.signJ3FromErrV = app->GetProfileInt(L"GrabTest\\Find", L"SignJ3FromErrV", gp.find.signJ3FromErrV);
+	}
+
+	gp.approach.timeToFetchStableFrames = app->GetProfileInt(L"GrabTest\\Approach", L"TimeToFetchStableFrames", gp.approach.timeToFetchStableFrames);
+	gp.approach.maxAdvanceSteps = app->GetProfileInt(L"GrabTest\\Approach", L"MaxAdvanceSteps", gp.approach.maxAdvanceSteps);
+	{
+		const int j2step = app->GetProfileInt(L"GrabTest\\Approach", L"J2AdvanceStepDeg_milli", (int)std::lround(gp.approach.j2AdvanceStepDeg * 1000.0));
+		gp.approach.j2AdvanceStepDeg = (double)j2step / 1000.0;
+	}
+	gp.approach.signJ2Advance = app->GetProfileInt(L"GrabTest\\Approach", L"SignJ2Advance", gp.approach.signJ2Advance);
+
+	gp.gripper.jointIndex = app->GetProfileInt(L"GrabTest\\Gripper", L"JointIndex", gp.gripper.jointIndex);
+	gp.gripper.openPos = app->GetProfileInt(L"GrabTest\\Gripper", L"OpenPos", gp.gripper.openPos);
+	gp.gripper.closePos = app->GetProfileInt(L"GrabTest\\Gripper", L"ClosePos", gp.gripper.closePos);
+	gp.gripper.closeStepPos = app->GetProfileInt(L"GrabTest\\Gripper", L"CloseStepPos", gp.gripper.closeStepPos);
+	gp.gripper.closeMoveTimeMs = app->GetProfileInt(L"GrabTest\\Gripper", L"CloseMoveTimeMs", gp.gripper.closeMoveTimeMs);
+	gp.gripper.maxCloseSteps = app->GetProfileInt(L"GrabTest\\Gripper", L"MaxCloseSteps", gp.gripper.maxCloseSteps);
+
+	gp.ret.returnToStartPose = app->GetProfileInt(L"GrabTest\\Return", L"ReturnToStartPose", gp.ret.returnToStartPose ? 1 : 0) ? true : false;
+	gp.ret.returnTimeMs = app->GetProfileInt(L"GrabTest\\Return", L"ReturnTimeMs", gp.ret.returnTimeMs);
+
+	m_grabTest.SetParams(gp);
+}
+
 LRESULT C智能机械臂Dlg::OnSettingsImported(WPARAM /*wParam*/, LPARAM /*lParam*/)
 {
 	if (m_bDestroying) return 0;
@@ -790,42 +880,40 @@ LRESULT C智能机械臂Dlg::OnSettingsImported(WPARAM /*wParam*/, LPARAM /*lPar
 	// 1) 视觉参数（现有逻辑）
 	LoadVisionSettingsFromProfile();
 	LoadSeeAndFetchSettingsFromProfile();
+	LoadGrabTestSettingsFromProfile();
 	m_tool.LoadAll();
+	if (m_chkSfGrabTest.GetSafeHwnd())
+	{
+		const bool grabTest = AfxGetApp()->GetProfileInt(L"GrabTest", L"Enabled", 0) ? true : false;
+		m_chkSfGrabTest.SetCheck(grabTest ? BST_CHECKED : BST_UNCHECKED);
+		if (grabTest)
+		{
+			ApplyGrabTestVisionMode(true);
+		}
+	}
 
-	// 2) 运动学/工具参数：用户可能在“诊断中心->几何参数”或导入 ini 后修改了尺寸/偏置
+	// 2) 运动学/工具参数：用户可能在"诊断中心->几何参数"或导入 ini 后修改了尺寸/偏置
 	//    必须重新加载到内存，否则 Jog/IK 仍使用旧参数，表现会非常混乱。
 	m_motion.LoadConfig();
 	m_kc.LoadAll();
 
-	// 3) 重置 Jog target：用“当前姿态估计”的 FK 作为 target，避免旧 target 在新尺寸下不可达。
+	// 3) 姿态可视化：更新连杆长度
+	if (m_ctrlPosture.GetSafeHwnd())
 	{
-		ArmKinematics::JointAnglesRad qCur{};
-		for (int j = 0; j <= ArmKinematics::kJointCount; j++) qCur.q[j] = 0.0;
-		for (int j = 1; j <= ArmKinematics::kJointCount; j++)
-		{
-			const auto& jc = m_motion.Config().Get(j);
-			int pos = jc.homePos;
-			if (jc.servoId >= 1 && jc.servoId <= 6)
-			{
-				uint16_t rb = 0;
-				if (ArmCommsService::Instance().GetLastReadPos((uint8_t)jc.servoId, rb))
-				{
-					pos = (int)rb;
-				}
-			}
-			double rad = 0.0;
-			if (!ArmKinematics::ServoPosToJointRad(m_kc, &m_motion.Config(), j, pos, rad))
-			{
-				rad = 0.0;
-			}
-			qCur.q[j] = rad;
-		}
-		const auto pose0 = ArmKinematics::ForwardKinematics(m_kc, qCur);
-		m_jog.SetTargetPose(pose0);
+		const auto& links = m_kc.Links();
+		m_ctrlPosture.SetLinkLengths(links.L_base, links.L_arm1, links.L_arm2, links.L_wrist);
+	}
+
+	// 3) 更新姿态显示（参数刷新后用读回估计）
+	{
+		ArmStateEstimator::ArmState st{};
+		(void)ArmStateEstimator::Estimate(m_motion, m_kc, st, nullptr);
+		const auto pose0 = st.joint5PoseBase;
 		if (m_staticMainPose.GetSafeHwnd())
 		{
 			CString s;
-			s.Format(L"Pose: (X=%.0f,Y=%.0f,Z=%.0f,p=%.1f) [参数已刷新]", pose0.x_mm, pose0.y_mm, pose0.z_mm, pose0.pitch_deg);
+			s.Format(L"Pose: (X=%.0f,Y=%.0f,Z=%.0f,p=%.1f) [参数已刷新]",
+			         pose0.x_mm, pose0.y_mm, pose0.z_mm, pose0.pitch_deg);
 			m_staticMainPose.SetWindowTextW(s);
 		}
 	}
@@ -853,6 +941,7 @@ void C智能机械臂Dlg::OnCbnSelChangeVisionAlgo()
 		else if (sel == 5) m = VisionService::Mode::Detector;
 		else if (sel == 6) m = VisionService::Mode::HandSticker;
 		else if (sel == 7) m = VisionService::Mode::HandLandmarks;
+		else if (sel == 8) m = VisionService::Mode::Gemini;
 		else m = VisionService::Mode::Auto;
 
 		m_vision.SetMode(m);
@@ -878,6 +967,7 @@ void C智能机械臂Dlg::OnCbnSelChangeVisionAlgo()
 		case VisionService::Mode::Detector: mode = 4; break;
 		case VisionService::Mode::HandSticker: mode = 5; break;
 		case VisionService::Mode::HandLandmarks: mode = 6; break;
+		case VisionService::Mode::Gemini: mode = 7; break;
 		default: mode = 0; break;
 		}
 		app->WriteProfileInt(L"Vision", L"Mode", mode);
@@ -906,6 +996,15 @@ void C智能机械臂Dlg::OnBnClickedVsNoDrive()
 
 void C智能机械臂Dlg::OnBnClickedSfEnable()
 {
+	if (m_chkSfGrabTest.GetSafeHwnd() && m_chkSfGrabTest.GetCheck() == BST_CHECKED)
+	{
+		if (m_chkSfEnable.GetSafeHwnd())
+		{
+			m_chkSfEnable.SetCheck(BST_UNCHECKED);
+		}
+		m_sfEnabled = false;
+		return;
+	}
 	m_sfEnabled = (m_chkSfEnable.GetSafeHwnd() && m_chkSfEnable.GetCheck() == BST_CHECKED);
 	if (!m_sfEnabled)
 	{
@@ -923,8 +1022,91 @@ void C智能机械臂Dlg::OnBnClickedSfEnable()
 	}
 }
 
+void C智能机械臂Dlg::ApplyGrabTestVisionMode(bool on)
+{
+	if (!on) return;
+
+	if (m_comboVisionAlgo.GetSafeHwnd())
+	{
+		m_comboVisionAlgo.SetCurSel(8); // Gemini(云端)
+		OnCbnSelChangeVisionAlgo();
+	}
+	if (m_chkVisionProcEnable.GetSafeHwnd())
+	{
+		m_chkVisionProcEnable.SetCheck(BST_CHECKED);
+		OnBnClickedVisionProcEnable();
+	}
+	{
+		auto vp = m_vision.GetParams();
+		vp.geminiEnableTimeToFetch = true;
+		vp.geminiResetSeq++;
+		m_vision.SetParams(vp);
+	}
+}
+
+void C智能机械臂Dlg::OnBnClickedSfGrabTest()
+{
+	const bool on = (m_chkSfGrabTest.GetSafeHwnd() && m_chkSfGrabTest.GetCheck() == BST_CHECKED);
+	if (CWinApp* app = AfxGetApp())
+	{
+		app->WriteProfileInt(L"GrabTest", L"Enabled", on ? 1 : 0);
+	}
+	LoadGrabTestSettingsFromProfile();
+	if (on)
+	{
+		if (m_chkSfEnable.GetSafeHwnd())
+		{
+			m_chkSfEnable.SetCheck(BST_UNCHECKED);
+			OnBnClickedSfEnable();
+		}
+		ApplyGrabTestVisionMode(true);
+	}
+	else
+	{
+		auto vp = m_vision.GetParams();
+		vp.geminiEnableTimeToFetch = false;
+		m_vision.SetParams(vp);
+		m_grabTestEnabled = false;
+		m_grabTestCmdStart = false;
+		m_grabTestCmdCancel = false;
+		m_grabTestCmdEStop = false;
+	}
+}
+
 void C智能机械臂Dlg::OnBnClickedSfStart()
 {
+	const bool grabTestOn = (m_chkSfGrabTest.GetSafeHwnd() && m_chkSfGrabTest.GetCheck() == BST_CHECKED);
+	if (grabTestOn)
+	{
+		// GrabTest: snapshot start pose for return
+		std::array<int, MotionConfig::kJointCount + 1> startPos{};
+		for (int j = 0; j <= MotionConfig::kJointCount; j++) startPos[(size_t)j] = -1;
+		{
+			const MotionConfig& mc = m_motion.Config();
+			const DWORD staleMs = (DWORD)AfxGetApp()->GetProfileInt(L"Readback", L"StaleMs", 800);
+			for (int j = 1; j <= MotionConfig::kJointCount; j++)
+			{
+				const auto& jc = mc.Get(j);
+				int pos = jc.homePos;
+				if (jc.servoId >= 1 && jc.servoId <= 6)
+				{
+					uint16_t rb = 0;
+					DWORD age = 0;
+					if (ArmCommsService::Instance().GetLastReadPosEx((uint8_t)jc.servoId, rb, age) && age <= staleMs)
+					{
+						pos = (int)rb;
+					}
+				}
+				startPos[(size_t)j] = pos;
+			}
+		}
+		m_grabTest.SetStartPose(startPos, true);
+		m_grabTestEnabled = true;
+		m_grabTestCmdStart = true;
+		ApplyGrabTestVisionMode(true);
+		return;
+	}
+
 	// 记录“开始时刻”的关节位置（用于 ReturnHome）
 	std::array<int, MotionConfig::kJointCount + 1> startPos{};
 	for (int j = 0; j <= MotionConfig::kJointCount; j++) startPos[(size_t)j] = -1;
@@ -949,6 +1131,21 @@ void C智能机械臂Dlg::OnBnClickedSfStart()
 	}
 	m_sf.SetStartPose(startPos, true);
 
+	// 设置 AutoHome 位置（连接后的初始姿态，用于 GoAutoHome）
+	// 这个位置在 StartAutoHomeAfterConnect() 中已经计算好了
+	{
+		bool hasValidAutoHome = false;
+		for (int j = 1; j <= MotionConfig::kJointCount; j++)
+		{
+			if (m_autoHomeTargetPos[(size_t)j] >= 0)
+			{
+				hasValidAutoHome = true;
+				break;
+			}
+		}
+		m_sf.SetAutoHomePos(m_autoHomeTargetPos, hasValidAutoHome);
+	}
+
 	// Enable + trigger confirm
 	if (m_chkSfEnable.GetSafeHwnd())
 	{
@@ -960,11 +1157,24 @@ void C智能机械臂Dlg::OnBnClickedSfStart()
 
 void C智能机械臂Dlg::OnBnClickedSfCancel()
 {
+	const bool grabTestOn = (m_chkSfGrabTest.GetSafeHwnd() && m_chkSfGrabTest.GetCheck() == BST_CHECKED);
+	if (grabTestOn)
+	{
+		m_grabTestCmdCancel = true;
+		return;
+	}
 	m_sfCmdCancel = true;
 }
 
 void C智能机械臂Dlg::OnBnClickedSfEStop()
 {
+	const bool grabTestOn = (m_chkSfGrabTest.GetSafeHwnd() && m_chkSfGrabTest.GetCheck() == BST_CHECKED);
+	if (grabTestOn)
+	{
+		m_grabTestCmdEStop = true;
+		ArmCommsService::Instance().EmergencyStop();
+		return;
+	}
 	m_sfCmdEStop = true;
 	ArmCommsService::Instance().EmergencyStop();
 }
@@ -984,10 +1194,10 @@ BOOL C智能机械臂Dlg::PreTranslateMessage(MSG* pMsg)
 void C智能机械臂Dlg::LoadMainWindowPlacement()
 {
 	CWinApp* app = AfxGetApp();
-	const int x = app->GetProfileInt(L"MainWindow", L"X", INT_MIN);
-	const int y = app->GetProfileInt(L"MainWindow", L"Y", INT_MIN);
-	const int w = app->GetProfileInt(L"MainWindow", L"W", 0);
-	const int h = app->GetProfileInt(L"MainWindow", L"H", 0);
+	int x = app->GetProfileInt(L"MainWindow", L"X", INT_MIN);
+	int y = app->GetProfileInt(L"MainWindow", L"Y", INT_MIN);
+	int w = app->GetProfileInt(L"MainWindow", L"W", 0);
+	int h = app->GetProfileInt(L"MainWindow", L"H", 0);
 	if (x == INT_MIN || y == INT_MIN || w <= 0 || h <= 0)
 	{
 		return;
@@ -998,6 +1208,29 @@ void C智能机械臂Dlg::LoadMainWindowPlacement()
 	{
 		return;
 	}
+
+	// ===== 按 DPI 计算最小尺寸，确保恢复的窗口不会太小 =====
+	HDC hdc = ::GetDC(GetSafeHwnd());
+	const int dpiX = ::GetDeviceCaps(hdc, LOGPIXELSX);
+	::ReleaseDC(GetSafeHwnd(), hdc);
+	const double dpiScale = (double)dpiX / 96.0;
+	const int minW = (int)std::lround(900.0 * dpiScale);
+	const int minH = (int)std::lround(650.0 * dpiScale);
+	if (w < minW) w = minW;
+	if (h < minH) h = minH;
+
+	// ===== 确保窗口在屏幕可见范围内（多显示器友好）=====
+	// 获取虚拟屏幕边界（所有显示器组成的矩形）
+	const int vsX = ::GetSystemMetrics(SM_XVIRTUALSCREEN);
+	const int vsY = ::GetSystemMetrics(SM_YVIRTUALSCREEN);
+	const int vsW = ::GetSystemMetrics(SM_CXVIRTUALSCREEN);
+	const int vsH = ::GetSystemMetrics(SM_CYVIRTUALSCREEN);
+	// 窗口至少有 100px 在屏幕内
+	if (x + w < vsX + 100) x = vsX;
+	if (y + h < vsY + 100) y = vsY;
+	if (x > vsX + vsW - 100) x = vsX + vsW - w;
+	if (y > vsY + vsH - 100) y = vsY + vsH - h;
+
 	MoveWindow(x, y, w, h, FALSE);
 }
 
@@ -1215,52 +1448,70 @@ void C智能机械臂Dlg::OnBnClickedMainSerialConnect()
 void C智能机械臂Dlg::StartAutoHomeAfterConnect()
 {
 	auto& comms = ArmCommsService::Instance();
-	if (!comms.IsConnected() || comms.IsSim())
-	{
-		m_autoHomeState = AutoHomeState::Ready; // 模拟/未连接不阻塞
-		return;
-	}
 
-	// 初始位角度解释：与“诊断->FK测试”的默认一致，按 **舵机物理角（deg）** 输入。
-	// 说明：J3 在机械定义中绕局部 X 反向旋转（Reference/mechanics.md），因此模型内部 q3 的符号与“物理角”相反。
+	// 初始位角度解释：与"诊断->FK测试"的默认一致，按 **舵机物理角（deg）** 输入。
+	// 说明：J3 在机械定义中绕局部 X 反向旋转（Reference/mechanics.md），因此模型内部 q3 的符号与"物理角"相反。
 	//      这里会先把 physicalDeg 转成模型关节角 q(rad)，再用统一的 JointRadToServoPos 映射到舵机位置。
 	for (int i = 0; i <= MotionConfig::kJointCount; i++) m_autoHomeTargetPos[(size_t)i] = -1;
 
 	auto DegToRad = [](double d) -> double { return d * (3.14159265358979323846 / 180.0); };
+	// 简化后的角度转换：方向由标定数据的 k = (posAtPlusDeg - posAt0Deg) / plusDeg 决定
 	auto PhysicalDegToJointRad = [&](int joint, double physicalDeg, double& outRad) -> bool
 	{
 		if (joint < 1 || joint > KinematicsConfig::kJointCount) return false;
 		const auto& jc = m_kc.GetJoint(joint);
-		// Physical 模式下用户输入的是“物理角”。若该关节 physicalInvert 开启，则先把物理角取反再进入模型坐标。
-		if (jc.physicalInvert) physicalDeg = -physicalDeg;
+		// 应用零位偏置
 		const double degZeroAdjusted = physicalDeg - jc.zeroOffsetDeg;
-		int sign = KinematicsConfig::AxisSignForJoint(joint);
-		if (m_motion.Config().Get(joint).invert) sign = -sign;
-		outRad = DegToRad(degZeroAdjusted) * (double)sign;
+		outRad = DegToRad(degZeroAdjusted);
 		return true;
 	};
 
-	// 物理角（deg），仅使用索引 1..5；0 号位保留不用
-	const double qDegPhysical[6] =
-	{
-		0.0,   // unused
-		0.0,  // J1
-		-30.0,  // J2
-		60.0,  // J3
-		60.0,  // J4
-		0.0,  // J5
-	};
+	// 物理角（deg），从 Profile (AutoHome/JxDeg) 读取，若不存在则使用默认值
+	// 用户可在"诊断中心->自动归位"页面修改这些角度并保存
+	const int qDegPhysicalDefault[6] = { 0, 0, -30, 60, 30, 0 };  // unused, J1, J2, J3, J4, J5
+	int qDegPhysical[6];
+	qDegPhysical[0] = 0;  // unused
+	qDegPhysical[1] = AfxGetApp()->GetProfileInt(L"AutoHome", L"J1Deg", qDegPhysicalDefault[1]);
+	qDegPhysical[2] = AfxGetApp()->GetProfileInt(L"AutoHome", L"J2Deg", qDegPhysicalDefault[2]);
+	qDegPhysical[3] = AfxGetApp()->GetProfileInt(L"AutoHome", L"J3Deg", qDegPhysicalDefault[3]);
+	qDegPhysical[4] = AfxGetApp()->GetProfileInt(L"AutoHome", L"J4Deg", qDegPhysicalDefault[4]);
+	qDegPhysical[5] = AfxGetApp()->GetProfileInt(L"AutoHome", L"J5Deg", qDegPhysicalDefault[5]);
 
-
+	// 计算 AutoHome 的关节角和舵机位置
+	ArmKinematics::JointAnglesRad qHome{};
 	for (int j = 1; j <= 5; j++)
 	{
-		int pos = -1;
 		double qRad = 0.0;
-		if (PhysicalDegToJointRad(j, qDegPhysical[j], qRad) &&
-		    ArmKinematics::JointRadToServoPos(m_kc, &m_motion.Config(), j, qRad, pos))
+		// 先计算模型角度（这一步总是应该成功）
+		if (PhysicalDegToJointRad(j, qDegPhysical[j], qRad))
+		{
+			qHome.q[j] = qRad;  // 始终设置关节角，用于 FK
+		}
+		// 再计算舵机位置（可能失败，但不影响 FK）
+		int pos = -1;
+		if (ArmKinematics::JointRadToServoPos(m_kc, &m_motion.Config(), j, qRad, pos))
 		{
 			m_autoHomeTargetPos[(size_t)j] = pos;
 		}
+	}
+
+	// 模拟串口时：不需要真正移动舵机，但要把 Jog 目标姿态设置为 AutoHome 位置
+	if (!comms.IsConnected() || comms.IsSim())
+	{
+		// 计算 AutoHome 对应的末端姿态，仅用于显示
+		const auto poseHome = ArmKinematics::ForwardKinematics(m_kc, qHome);
+
+		// 更新姿态显示
+		if (m_staticMainPose.GetSafeHwnd())
+		{
+			CString s;
+			s.Format(L"Pose: (X=%.0f,Y=%.0f,Z=%.0f,p=%.1f) [AutoHome]",
+			         poseHome.x_mm, poseHome.y_mm, poseHome.z_mm, poseHome.pitch_deg);
+			m_staticMainPose.SetWindowTextW(s);
+		}
+
+		m_autoHomeState = AutoHomeState::Ready; // 模拟/未连接不阻塞
+		return;
 	}
 
 	m_autoHomeStartTick = ::GetTickCount64();
@@ -1390,13 +1641,10 @@ void C智能机械臂Dlg::OnTimer(UINT_PTR nIDEvent)
 	{
 		// 主界面必须持续泵通信队列：否则 Jog 下发只入队不发送（除非打开诊断页）
 		ArmCommsService::Instance().Tick();
-		// MotionController 也依赖 Tick（脚本/读回请求等）
-		m_motion.Tick();
-
 		// 连接后自动归位：未“已就位”前禁止 Jog（但仍允许读回与归位指令下发）
 		TickAutoHome();
 
-		// [闭环基础] 周期性请求舵机位置回读（主界面默认也要读回，否则只能“靠积分猜测姿态”，时间一长必乱）
+		// [闭环基础] 周期性请求舵机位置回读（主界面默认也要读回，否则只能"靠积分猜测姿态"，时间一长必乱）
 		// 频率不宜过高：TX 有 throttle + Move 优先级；这里约 5Hz 足够用于 Jog 校正方向/状态。
 		{
 			static DWORD s_lastReadTick = 0;
@@ -1406,6 +1654,89 @@ void C智能机械臂Dlg::OnTimer(UINT_PTR nIDEvent)
 				m_motion.RequestReadAllAssigned();
 				s_lastReadTick = now;
 			}
+		}
+
+		// ===== 姿态可视化面板更新 =====
+		static std::array<int, MotionConfig::kJointCount + 1> s_lastValidPos{};
+		static std::array<bool, MotionConfig::kJointCount + 1> s_hasLastValid{};
+		if (m_ctrlPosture.GetSafeHwnd())
+		{
+			const DWORD staleMs = (DWORD)AfxGetApp()->GetProfileInt(L"Readback", L"StaleMs", 800);
+
+			// 更新 J1..J5 关节状态
+			for (int j = 1; j <= 5; j++)
+			{
+				const auto& jc = m_motion.Config().Get(j);
+				int pos = jc.homePos;
+				bool valid = false;
+
+				if (jc.servoId >= 1 && jc.servoId <= 6)
+				{
+					uint16_t rb = 0;
+					DWORD age = 0;
+					if (ArmCommsService::Instance().GetLastReadPosEx((uint8_t)jc.servoId, rb, age) && age <= staleMs)
+					{
+						pos = (int)rb;
+						valid = true;
+						s_lastValidPos[(size_t)j] = pos;
+						s_hasLastValid[(size_t)j] = true;
+					}
+					else if (s_hasLastValid[(size_t)j])
+					{
+						pos = s_lastValidPos[(size_t)j];
+						valid = true;
+					}
+				}
+
+				// 转换为物理角度（简化后：方向由标定数据的 k 值决定）
+				double angleDeg = 0.0;
+				double qRad = 0.0;
+				if (ArmKinematics::ServoPosToJointRad(m_kc, &m_motion.Config(), j, pos, qRad))
+				{
+					// qRad 是关节角（弧度），转换为度并加回零位偏置
+					angleDeg = qRad * (180.0 / 3.14159265358979323846);
+					angleDeg += m_kc.GetJoint(j).zeroOffsetDeg;
+				}
+
+				m_ctrlPosture.SetJointState(j, pos, angleDeg, valid);
+
+				// 目标位置：键盘 Jog 已移除，仅显示读回
+				m_ctrlPosture.SetJointTargetPos(j, -1);
+			}
+
+			// 更新夹爪状态 (J6)
+			{
+				const auto& jc = m_motion.Config().Get(6);
+				int pos = jc.homePos;
+				bool valid = false;
+
+				if (jc.servoId >= 1 && jc.servoId <= 6)
+				{
+					uint16_t rb = 0;
+					DWORD age = 0;
+					if (ArmCommsService::Instance().GetLastReadPosEx((uint8_t)jc.servoId, rb, age) && age <= staleMs)
+					{
+						pos = (int)rb;
+						valid = true;
+						s_lastValidPos[(size_t)6] = pos;
+						s_hasLastValid[(size_t)6] = true;
+					}
+					else if (s_hasLastValid[(size_t)6])
+					{
+						pos = s_lastValidPos[(size_t)6];
+						valid = true;
+					}
+				}
+
+				// 夹爪开合位置从配置读取（后续可配置化）
+				const int gripOpenPos = AfxGetApp()->GetProfileInt(L"SeeAndFetch\\Gripper", L"OpenPos", 640);
+				const int gripClosePos = AfxGetApp()->GetProfileInt(L"SeeAndFetch\\Gripper", L"ClosePos", 100);
+				m_ctrlPosture.SetGripperState(pos, gripOpenPos, gripClosePos, valid);
+				m_ctrlPosture.SetJointTargetPos(6, -1); // 夹爪目前没有目标跟踪
+			}
+
+			// 刷新绘图
+			m_ctrlPosture.RefreshDisplay();
 		}
 
 		// 预览窗口 Resize 防抖：拖拽缩放结束后再 Reset D3D，避免花屏/条纹
@@ -1425,452 +1756,335 @@ void C智能机械臂Dlg::OnTimer(UINT_PTR nIDEvent)
 			}
 		}
 
-		// ===== 手动控制：FPS 圆柱模式 =====
-		// 键位（按住持续移动）：
-		// - W/S：沿视线前后（fwd）
-		// - Q/E：垂直于视线的上下（vert）
-		// - A/D：底座转动（yaw）
-		// - R/F：俯仰（pitch）
-		JogController::FpsInputState fin{};
-		fin.fwd = 0.0;
-		fin.vert = 0.0;
-		fin.yaw = 0.0;
-		fin.pitch = 0.0;
-
-		const auto keyDown = [](int vk) -> bool {
-			return (::GetAsyncKeyState(vk) & 0x8000) != 0;
-			};
-
-		if (keyDown('W')) fin.fwd += 1.0;
-		if (keyDown('S')) fin.fwd -= 1.0;
-		if (keyDown('E')) fin.vert += 1.0;
-		if (keyDown('Q')) fin.vert -= 1.0;
-		if (keyDown('D')) fin.yaw += 1.0;
-		if (keyDown('A')) fin.yaw -= 1.0;
-		if (keyDown('R')) fin.pitch += 1.0;
-		if (keyDown('F')) fin.pitch -= 1.0;
-
-		// 鼠标摇杆：用于 fwd/yaw（更接近“FPS驾驶”手感）
-		if (m_staticMainJogPad.GetSafeHwnd() && m_staticMainJogPad.IsActive())
+		const bool grabTestOn = (m_chkSfGrabTest.GetSafeHwnd() && m_chkSfGrabTest.GetCheck() == BST_CHECKED);
+		if (grabTestOn)
 		{
-			// [BUGFIX] 不能覆盖键盘输入，否则当摇杆控件“误判为激活”时会导致 WASD 全部失效。
-			// 改为叠加（并裁剪到 [-1,1]），键盘与鼠标摇杆可同时工作。
-			const double padX = m_staticMainJogPad.GetX();
-			const double padY = m_staticMainJogPad.GetY();
-			fin.yaw = std::max(-1.0, std::min(1.0, fin.yaw + padX));
-			fin.fwd = std::max(-1.0, std::min(1.0, fin.fwd + padY));
-		}
-
-		const bool manualActive = (std::fabs(fin.fwd) + std::fabs(fin.vert) + std::fabs(fin.yaw) + std::fabs(fin.pitch)) > 0.0;
-		// 未就位：直接屏蔽手动输入（避免“首次操作瞬移”）
-		fin.active = manualActive && IsAutoHomeReady();
-
-		// ===== See&Fetch 自动流程（关节分步）=====
-		SeeAndFetchStateMachine::Output sfOut;
-		bool sfLockManual = false;
-		if (m_sfEnabled && IsAutoHomeReady())
-		{
-			SeeAndFetchStateMachine::Input sin;
-			sin.pKc = &m_kc;
-			sin.pMc = &m_motion.Config();
-			sin.tool = m_tool;
-			(void)ArmStateEstimator::Estimate(m_motion, m_kc, sin.arm, nullptr);
-
-			// Vision observation (from VisionService last result)
+			GrabTestController::Output gtOut;
+			if (m_grabTestEnabled && IsAutoHomeReady())
 			{
-				const auto vr = m_vision.GetLastResult();
-				VisualObservation obs;
-				obs.tickMs = vr.tickMs;
-				obs.hasTargetPx = vr.hasTargetPx;
-				obs.u = vr.u;
-				obs.v = vr.v;
-				obs.hasDepthMm = vr.hasDepthMm;
-				obs.depthMm = vr.depthMm;
-				obs.hasConfidence = vr.hasConfidence;
-				obs.confidence = vr.confidence;
-				sin.obs = obs;
-				sin.hasObs = (vr.tickMs != 0);
+				GrabTestController::Input gin;
+				gin.pKc = &m_kc;
+				gin.pMc = &m_motion.Config();
+				(void)ArmStateEstimator::Estimate(m_motion, m_kc, gin.arm, nullptr);
 
-				// bbox/track box
-				sin.hasBox = vr.hasBox;
-				sin.boxW = vr.boxW;
-				sin.boxH = vr.boxH;
-				sin.boxClassId = vr.classId;
-				sin.visionMode = vr.mode;
-
-				// PointPick (gesture selection)
-				sin.pickState = vr.pickState;
-				sin.hasPickBox = vr.hasPickBox;
-				sin.pickBoxX = vr.pickBoxX;
-				sin.pickBoxY = vr.pickBoxY;
-				sin.pickBoxW = vr.pickBoxW;
-				sin.pickBoxH = vr.pickBoxH;
-			}
-
-			// Frame size
-			{
-				auto st = m_vision.GetStats();
-				sin.frameW = st.frameW;
-				sin.frameH = st.frameH;
-				if ((sin.frameW == 0 || sin.frameH == 0) && m_pMainPreview && m_bMainPreviewing)
+				// Vision observation (from VisionService last result)
 				{
-					sin.frameW = (UINT)m_pMainPreview->GetWidth();
-					sin.frameH = (UINT)m_pMainPreview->GetHeight();
-				}
-			}
+					const auto vr = m_vision.GetLastResult();
+					VisualObservation obs;
+					obs.tickMs = vr.tickMs;
+					obs.hasTargetPx = vr.hasTargetPx;
+					obs.u = vr.u;
+					obs.v = vr.v;
+					obs.hasDepthMm = vr.hasDepthMm;
+					obs.depthMm = vr.depthMm;
+					obs.hasConfidence = vr.hasConfidence;
+					obs.confidence = vr.confidence;
+					gin.obs = obs;
 
-			// Gripper readback (joint 6)
-			{
-				const auto& jc = m_motion.Config().Get(6);
-				if (jc.servoId >= 1 && jc.servoId <= 6)
-				{
-					uint16_t rb = 0;
-					DWORD age = 0;
-					if (ArmCommsService::Instance().GetLastReadPosEx((uint8_t)jc.servoId, rb, age))
+					// 检查观测值时效性：超过 500ms 认为过期，不使用
+					const ULONGLONG nowObs = ::GetTickCount64();
+					const ULONGLONG obsAge = (vr.tickMs > 0 && nowObs >= vr.tickMs) ? (nowObs - vr.tickMs) : 0;
+					const bool obsStale = (obsAge > 500);
+					gin.hasObs = (vr.tickMs != 0) && !obsStale;
+					if (obsStale)
 					{
-						sin.hasGripReadback = true;
-						sin.gripReadbackPos = (int)rb;
-						sin.gripReadbackAgeMs = age;
+						gin.obs.hasTargetPx = false;
+					}
+
+					gin.hasTimeToFetch = vr.hasGeminiTimeToFetch;
+					gin.timeToFetch = vr.geminiTimeToFetch;
+				}
+
+				// Frame size
+				{
+					auto st = m_vision.GetStats();
+					gin.frameW = st.frameW;
+					gin.frameH = st.frameH;
+					if ((gin.frameW == 0 || gin.frameH == 0) && m_pMainPreview && m_bMainPreviewing)
+					{
+						gin.frameW = (UINT)m_pMainPreview->GetWidth();
+						gin.frameH = (UINT)m_pMainPreview->GetHeight();
 					}
 				}
-			}
 
-			// Servo positions snapshot (for initial_pos / terminal_pos)
-			{
-				sin.hasServoPos = true;
-				for (int j = 0; j <= MotionConfig::kJointCount; j++) sin.servoPos[(size_t)j] = -1;
-				const MotionConfig& mc = m_motion.Config();
-				const DWORD staleMs = (DWORD)AfxGetApp()->GetProfileInt(L"Readback", L"StaleMs", 800);
-				for (int j = 1; j <= MotionConfig::kJointCount; j++)
-				{
-					const auto& jc = mc.Get(j);
-					int pos = jc.homePos;
-					if (jc.servoId >= 1 && jc.servoId <= 6)
-					{
-						uint16_t rb = 0;
-						DWORD age = 0;
-						if (ArmCommsService::Instance().GetLastReadPosEx((uint8_t)jc.servoId, rb, age) && age <= staleMs)
-						{
-							pos = (int)rb;
-						}
-					}
-					sin.servoPos[(size_t)j] = pos;
-				}
-			}
+				GrabTestController::UserCommand gcmd;
+				gcmd.start = m_grabTestCmdStart;
+				gcmd.cancel = m_grabTestCmdCancel;
+				gcmd.eStop = m_grabTestCmdEStop;
+				m_grabTestCmdStart = false;
+				m_grabTestCmdCancel = false;
+				m_grabTestCmdEStop = false;
 
-			SeeAndFetchStateMachine::UserCommand scmd;
-			scmd.confirm = m_sfCmdConfirm;
-			scmd.cancel = m_sfCmdCancel;
-			scmd.eStop = m_sfCmdEStop;
-			m_sfCmdConfirm = false;
-			m_sfCmdCancel = false;
-			m_sfCmdEStop = false;
+				(void)m_grabTest.Tick(gin, gcmd, gtOut);
 
-			(void)m_sf.Tick(sin, scmd, sfOut);
-			sfLockManual = sfOut.lockManualJog;
-
-			// Apply PointPick control (target + reset) to VisionService params
-			{
-				bool needUpdate = false;
-				auto vp = m_vision.GetParams();
-				if (sfOut.requestPointPickTarget >= 0 && vp.pointPickTarget != sfOut.requestPointPickTarget)
+				if (gtOut.requestGeminiReset)
 				{
-					vp.pointPickTarget = sfOut.requestPointPickTarget;
-					needUpdate = true;
-				}
-				// Always enforce "Detector-only candidates" for object selection requirement.
-				// RedDot target ignores detector-only setting because it does not use detector boxes.
-				if (vp.pointPickDetectorOnly != true)
-				{
-					vp.pointPickDetectorOnly = true;
-					needUpdate = true;
-				}
-				if (sfOut.requestPointPickReset)
-				{
-					vp.pointPickResetSeq++;
-					needUpdate = true;
-				}
-				if (needUpdate)
-				{
+					auto vp = m_vision.GetParams();
+					vp.geminiResetSeq++;
 					m_vision.SetParams(vp);
 				}
+
+				// Execute suggested move
+				if (gtOut.hasMove && !gtOut.jointToPos.empty())
+				{
+					ArmCommsService::Instance().ClearMoveQueue();
+					(void)m_motion.MoveJointsAbs(gtOut.jointToPos, gtOut.moveTimeMs);
+				}
+			}
+			else
+			{
+				gtOut = GrabTestController::Output{};
+				gtOut.state = m_grabTest.GetState();
 			}
 
-			// Apply vision mode override suggestion (prefer requestVisionMode if set)
-			if (sfOut.requestVisionMode >= 0)
+			// GrabTest status
+			if (m_staticSfStatus.GetSafeHwnd())
 			{
-				if (!m_sfVisionOverridden)
+				CString sfs;
+				if (!m_grabTestEnabled)
 				{
-					m_sfPrevVisionMode = m_visionAlgoMode;
-					m_sfVisionOverridden = true;
+					sfs = L"GT:OFF";
 				}
-				const auto m = (VisionService::Mode)sfOut.requestVisionMode;
-				m_vision.SetMode(m);
-				m_visionAlgoMode = m;
-				m_visionAlgoEnabled = true;
-			}
-			else if (sfOut.requestVisionAruco)
-			{
-				if (!m_sfVisionOverridden)
+				else
 				{
-					m_sfPrevVisionMode = m_visionAlgoMode;
-					m_sfVisionOverridden = true;
+					sfs.Format(L"GT:%d %s", (int)gtOut.state, gtOut.reason.c_str());
 				}
-				m_vision.SetMode(VisionService::Mode::Aruco);
-				m_visionAlgoMode = VisionService::Mode::Aruco;
-				m_visionAlgoEnabled = true;
-			}
-			else if (m_sfVisionOverridden && m_sf.GetState() == SeeAndFetchStateMachine::State::Idle)
-			{
-				m_vision.SetMode(m_sfPrevVisionMode);
-				m_visionAlgoMode = m_sfPrevVisionMode;
-				m_sfVisionOverridden = false;
-			}
-
-			// Execute suggested move (directly via MotionController; Jog stays untouched)
-			if (sfOut.hasMove && !sfOut.jointToPos.empty())
-			{
-				ArmCommsService::Instance().ClearMoveQueue();
-				(void)m_motion.MoveJointsAbs(sfOut.jointToPos, sfOut.moveTimeMs);
+				m_staticSfStatus.SetWindowTextW(sfs);
 			}
 		}
 		else
 		{
-			// disabled: keep idle and restore vision override if needed
-			if (m_sfVisionOverridden)
+			// ===== See&Fetch 自动流程（关节分步）=====
+			SeeAndFetchStateMachine::Output sfOut;
+			if (m_sfEnabled && IsAutoHomeReady())
 			{
-				m_vision.SetMode(m_sfPrevVisionMode);
-				m_visionAlgoMode = m_sfPrevVisionMode;
-				m_sfVisionOverridden = false;
-			}
-			sfOut = SeeAndFetchStateMachine::Output{};
-			sfOut.state = m_sf.GetState();
-		}
+				SeeAndFetchStateMachine::Input sin;
+				sin.pKc = &m_kc;
+				sin.pMc = &m_motion.Config();
+				sin.tool = m_tool;
+				(void)ArmStateEstimator::Estimate(m_motion, m_kc, sin.arm, nullptr);
 
-		// Lock manual during auto flow (per requirement)
-		if (sfLockManual)
-		{
-			fin.active = false;
-			fin.fwd = fin.vert = fin.yaw = fin.pitch = 0.0;
-		}
-
-		// 同步滑条参数到 JogController（实时调参）
-		JogController::Params p = m_jog.GetParams();
-		double speedMul = 1.0;
-		if (keyDown(VK_SHIFT))
-		{
-			speedMul = 2.0; // Shift 加速
-		}
-		// [体验修复] 原始滑条数值偏激进，导致按键一按就“很猛”。这里整体缩放到约 0.4（约 1/2~1/3）。
-		// 说明：滑条本身仍代表“上限”，只是默认映射更温和；需要更快可按住 Shift（仍保留 2x）。
-		const double kManualSpeedScale = 0.4;
-		p.speedMmPerSec = (double)m_sliderSpeedMm.GetPos() * speedMul * kManualSpeedScale;
-		p.pitchDegPerSec = (double)m_sliderSpeedPitch.GetPos() * speedMul * kManualSpeedScale;
-		p.yawDegPerSec = 90.0 * speedMul * kManualSpeedScale;
-		m_jog.SetParams(p);
-
-		// ===== 视觉跟随（Visual Servo）=====
-		const bool vsEnable = (m_chkVsEnable.GetSafeHwnd() && m_chkVsEnable.GetCheck() == BST_CHECKED);
-		m_vs.SetEnabled(vsEnable);
-		// 视觉线程默认一直跑；这里用“识别启用”开关控制是否产出结果（与 VS Enable 解耦）。
-		// 说明：当识别模式选“手动(点击)”时，m_visionAlgoEnabled=false，让你用鼠标点画面生成观测，
-		// 不会被最亮点/色块等算法立刻覆盖。
-		const bool procEnable = (m_chkVisionProcEnable.GetSafeHwnd() && m_chkVisionProcEnable.GetCheck() == BST_CHECKED);
-		m_vision.SetEnabled(procEnable && m_visionAlgoEnabled);
-
-		// Mode
-		if (m_comboVsMode.GetSafeHwnd())
-		{
-			const int sel = m_comboVsMode.GetCurSel();
-			if (sel == 0) m_vs.SetMode(VisualServoMode::CenterTarget);
-			else if (sel == 1) m_vs.SetMode(VisualServoMode::FollowRay);
-			else m_vs.SetMode(VisualServoMode::LookAndMove);
-		}
-
-		// Intrinsics：优先使用“帧分辨率”（与 CopyLastRgb / HUD 坐标一致）。
-		// 若无预览对象（test source），退化为使用窗口大小。
-		{
-			int vw = 0, vh = 0;
-			if (m_pMainPreview && m_bMainPreviewing)
-			{
-				vw = (int)m_pMainPreview->GetWidth();
-				vh = (int)m_pMainPreview->GetHeight();
-			}
-			if ((vw <= 0 || vh <= 0) && m_staticMainVideo.GetSafeHwnd())
-			{
-				CRect rc;
-				m_staticMainVideo.GetClientRect(&rc);
-				vw = rc.Width();
-				vh = rc.Height();
-			}
-			if (vw > 0 && vh > 0)
-			{
-				CameraIntrinsics K;
-				K.valid = true;
-				K.fx = (double)vw; // 粗略近似：先保证闭环能跑；后续由标定替换
-				K.fy = (double)vh;
-				K.cx = (double)vw * 0.5;
-				K.cy = (double)vh * 0.5;
-				m_vs.SetCameraIntrinsics(K);
-			}
-		}
-
-		// Params: sync speed ceiling with main sliders
-		{
-			auto vp = m_vs.GetParams();
-			vp.maxSpeedMmPerSec = p.speedMmPerSec;
-			vp.maxPitchDegPerSec = p.pitchDegPerSec;
-			vp.raySpeedMmPerSec = std::max(10.0, p.speedMmPerSec); // 沿指向推进速度默认跟随线速度
-			m_vs.SetParams(vp);
-		}
-
-		// Arm pose：用于姿态相关的 Cam->Base 变换（沿视线推进/射线运动在不同姿态下仍保持方向一致）
-		{
-			ArmStateEstimator::ArmState st{};
-			(void)ArmStateEstimator::Estimate(m_motion, m_kc, st, nullptr);
-			VisualServoController::ArmPose ap{};
-			ap.valid = st.valid;
-			ap.yawRad = st.yawRad;
-			ap.pitchRad = st.pitchRad;
-			m_vs.SetArmPose(ap);
-		}
-
-		// Advance command: [-1,1]
-		double adv = 0.0;
-		if (m_sliderVsAdvance.GetSafeHwnd())
-		{
-			adv = (double)m_sliderVsAdvance.GetPos() / 100.0;
-		}
-		m_vs.SetAdvanceCommand(adv);
-
-		// Compute output once
-		VisualServoOutput vsOut;
-		m_vs.ComputeOutput(vsOut);
-
-		// Decide whether to apply visual output to jog
-		const bool overrideManual = (m_chkVsOverride.GetSafeHwnd() && m_chkVsOverride.GetCheck() == BST_CHECKED);
-		const bool noDrive = (m_chkVsNoDrive.GetSafeHwnd() && m_chkVsNoDrive.GetCheck() == BST_CHECKED);
-		const bool useVs = IsAutoHomeReady() && vsEnable && !noDrive && !sfLockManual && (overrideManual || !manualActive);
-
-		// manual input is the default (FPS)
-		m_jog.SetFpsInputState(fin);
-		if (useVs)
-		{
-			JogController::InputState vin{};
-			vin.active = vsOut.active;
-			vin.x = vsOut.x;
-			vin.y = vsOut.y;
-			vin.z = vsOut.z;
-			vin.pitch = vsOut.pitch;
-			m_jog.SetInputState(vin);
-		}
-
-		// UI status (short)
-		if (m_staticVsStatus.GetSafeHwnd())
-		{
-			CString s;
-			if (!vsEnable)
-			{
-				s = L"VS:OFF";
-			}
-			else if (!useVs && manualActive)
-			{
-				s = L"VS:suppressed (manual)";
-			}
-			else if (noDrive)
-			{
-				s = L"VS:TEST (no drive)";
-			}
-			else
-			{
-				const auto st = m_vision.GetStats();
-				const wchar_t* algo = L"Manual";
-				if (m_visionAlgoEnabled)
+				// Vision observation (from VisionService last result)
 				{
-					switch (m_visionAlgoMode)
+					const auto vr = m_vision.GetLastResult();
+					VisualObservation obs;
+					obs.tickMs = vr.tickMs;
+					obs.hasTargetPx = vr.hasTargetPx;
+					obs.u = vr.u;
+					obs.v = vr.v;
+					obs.hasDepthMm = vr.hasDepthMm;
+					obs.depthMm = vr.depthMm;
+					obs.hasConfidence = vr.hasConfidence;
+					obs.confidence = vr.confidence;
+					sin.obs = obs;
+
+					// 检查观测值时效性：超过 500ms 认为过期，不使用
+					const ULONGLONG nowObs = ::GetTickCount64();
+					const ULONGLONG obsAge = (vr.tickMs > 0 && nowObs >= vr.tickMs) ? (nowObs - vr.tickMs) : 0;
+					const bool obsStale = (obsAge > 500);
+					sin.hasObs = (vr.tickMs != 0) && !obsStale;
+					if (obsStale)
 					{
-					case VisionService::Mode::Auto: algo = L"Auto"; break;
-					case VisionService::Mode::BrightestPoint: algo = L"Brightest"; break;
-					case VisionService::Mode::ColorTrack: algo = L"Color"; break;
-					case VisionService::Mode::Aruco: algo = L"Aruco"; break;
-					case VisionService::Mode::Detector: algo = L"Detector"; break;
-						case VisionService::Mode::HandSticker: algo = L"Sticker"; break;
-						case VisionService::Mode::HandLandmarks: algo = L"HandLM"; break;
-					default: algo = L"Auto"; break;
+						// 观测过期时，强制清除目标标志，避免使用旧的 u,v 位置
+						sin.obs.hasTargetPx = false;
+					}
+
+					// bbox/track box
+					sin.hasBox = vr.hasBox;
+					sin.boxW = vr.boxW;
+					sin.boxH = vr.boxH;
+					sin.boxClassId = vr.classId;
+					sin.visionMode = vr.mode;
+
+					// PointPick (gesture selection)
+					sin.pickState = vr.pickState;
+					sin.hasPickBox = vr.hasPickBox;
+					sin.pickBoxX = vr.pickBoxX;
+					sin.pickBoxY = vr.pickBoxY;
+					sin.pickBoxW = vr.pickBoxW;
+					sin.pickBoxH = vr.pickBoxH;
+					sin.hasHandLandmarks = vr.hasHandLandmarks;
+					sin.handGesture = vr.handGesture;
+				}
+
+				// Frame size
+				{
+					auto st = m_vision.GetStats();
+					sin.frameW = st.frameW;
+					sin.frameH = st.frameH;
+					if ((sin.frameW == 0 || sin.frameH == 0) && m_pMainPreview && m_bMainPreviewing)
+					{
+						sin.frameW = (UINT)m_pMainPreview->GetWidth();
+						sin.frameH = (UINT)m_pMainPreview->GetHeight();
 					}
 				}
-				const wchar_t* cv = SMARTARM_HAS_OPENCV_HEADERS ? L"cv=Y" : L"cv=N";
-				// 把 cv/proc/algo 放到前面：即使静态文本被截断，也能一眼看到 OpenCV 是否生效
-				s.Format(L"VS:%s %s %s p=%.1f e(%.0f,%.0f) adv=%.2f",
-				         vsOut.active ? L"ON" : L"IDLE",
-				         cv,
-				         algo,
-				         st.procFps,
-				         vsOut.errU, vsOut.errV,
-				         adv);
-			}
-			m_staticVsStatus.SetWindowTextW(s);
-		}
 
-		// See&Fetch status
-		if (m_staticSfStatus.GetSafeHwnd())
-		{
-			CString sfs;
-			if (!m_sfEnabled)
-			{
-				sfs = L"SF:OFF";
+				// Gripper readback (joint 6)
+				{
+					const auto& jc = m_motion.Config().Get(6);
+					if (jc.servoId >= 1 && jc.servoId <= 6)
+					{
+						uint16_t rb = 0;
+						DWORD age = 0;
+						if (ArmCommsService::Instance().GetLastReadPosEx((uint8_t)jc.servoId, rb, age))
+						{
+							sin.hasGripReadback = true;
+							sin.gripReadbackPos = (int)rb;
+							sin.gripReadbackAgeMs = age;
+						}
+					}
+				}
+
+				// Servo positions snapshot (for initial_pos / terminal_pos)
+				{
+					sin.hasServoPos = true;
+					for (int j = 0; j <= MotionConfig::kJointCount; j++) sin.servoPos[(size_t)j] = -1;
+					const MotionConfig& mc = m_motion.Config();
+					const DWORD staleMs = (DWORD)AfxGetApp()->GetProfileInt(L"Readback", L"StaleMs", 800);
+				for (int j = 1; j <= MotionConfig::kJointCount; j++)
+					{
+						const auto& jc = mc.Get(j);
+						int pos = jc.homePos;
+						if (jc.servoId >= 1 && jc.servoId <= 6)
+						{
+							uint16_t rb = 0;
+							DWORD age = 0;
+							if (ArmCommsService::Instance().GetLastReadPosEx((uint8_t)jc.servoId, rb, age) && age <= staleMs)
+							{
+								pos = (int)rb;
+							s_lastValidPos[(size_t)j] = pos;
+							s_hasLastValid[(size_t)j] = true;
+						}
+						else if (s_hasLastValid[(size_t)j])
+						{
+							pos = s_lastValidPos[(size_t)j];
+							}
+						}
+						sin.servoPos[(size_t)j] = pos;
+					}
+				}
+
+				SeeAndFetchStateMachine::UserCommand scmd;
+				scmd.confirm = m_sfCmdConfirm;
+				scmd.cancel = m_sfCmdCancel;
+				scmd.eStop = m_sfCmdEStop;
+				m_sfCmdConfirm = false;
+				m_sfCmdCancel = false;
+				m_sfCmdEStop = false;
+
+				(void)m_sf.Tick(sin, scmd, sfOut);
+
+				// Apply PointPick control (target + reset) to VisionService params
+				{
+					bool needUpdate = false;
+					auto vp = m_vision.GetParams();
+					if (sfOut.requestPointPickTarget >= 0 && vp.pointPickTarget != sfOut.requestPointPickTarget)
+					{
+						vp.pointPickTarget = sfOut.requestPointPickTarget;
+						needUpdate = true;
+					}
+					if (sfOut.requestGeminiReset)
+					{
+						vp.geminiResetSeq++;
+						needUpdate = true;
+					}
+					// 始终禁止“轮廓兜底”，确保候选来源可控（Gemini/红点各自负责）。
+					// 红点目标不依赖 Detector/Gemini 候选框。
+					if (vp.pointPickDetectorOnly != true)
+					{
+						vp.pointPickDetectorOnly = true;
+						needUpdate = true;
+					}
+					if (sfOut.requestPointPickReset)
+					{
+						vp.pointPickResetSeq++;
+						needUpdate = true;
+					}
+					if (needUpdate)
+					{
+						m_vision.SetParams(vp);
+					}
+				}
+
+				// Apply vision mode override suggestion (prefer requestVisionMode if set)
+				if (sfOut.requestVisionMode >= 0)
+				{
+					if (!m_sfVisionOverridden)
+					{
+						m_sfPrevVisionMode = m_visionAlgoMode;
+						m_sfVisionOverridden = true;
+					}
+					const auto m = (VisionService::Mode)sfOut.requestVisionMode;
+					m_vision.SetMode(m);
+					m_visionAlgoMode = m;
+					m_visionAlgoEnabled = true;
+				}
+				else if (sfOut.requestVisionAruco)
+				{
+					if (!m_sfVisionOverridden)
+					{
+						m_sfPrevVisionMode = m_visionAlgoMode;
+						m_sfVisionOverridden = true;
+					}
+					m_vision.SetMode(VisionService::Mode::Aruco);
+					m_visionAlgoMode = VisionService::Mode::Aruco;
+					m_visionAlgoEnabled = true;
+				}
+				else if (m_sfVisionOverridden && m_sf.GetState() == SeeAndFetchStateMachine::State::Idle)
+				{
+					m_vision.SetMode(m_sfPrevVisionMode);
+					m_visionAlgoMode = m_sfPrevVisionMode;
+					m_sfVisionOverridden = false;
+				}
+
+				// Execute suggested move (directly via MotionController; Jog stays untouched)
+				if (sfOut.pauseTracking)
+				{
+					ArmCommsService::Instance().ClearMoveQueue();
+				}
+				else if (sfOut.hasMove && !sfOut.jointToPos.empty())
+				{
+					ArmCommsService::Instance().ClearMoveQueue();
+					(void)m_motion.MoveJointsAbs(sfOut.jointToPos, sfOut.moveTimeMs);
+				}
 			}
 			else
 			{
-				// keep it short; long reason is still available in logs/HUD later
-				sfs.Format(L"SF:%d %s", (int)sfOut.state, sfOut.reason.c_str());
-			}
-			m_staticSfStatus.SetWindowTextW(sfs);
-		}
-
-		std::wstring why;
-		const bool ok = m_jog.Tick(why);
-
-		if (!ok)
-		{
-			// 失败时停止继续发送，但不急停（允许用户松手恢复/调整）
-			m_jog.Stop();
-
-			// ===== 最小验收点 A1：导出 JogTrace（用于定位“瞬移/方向错乱”）=====
-			// 说明：
-			// - 仅在 Tick 返回 false（即 IK/限位/下发失败）时导出
-			// - 覆盖写 exe 同目录下的 jog_trace_last.txt
-			// - 为避免频繁写盘，这里做 1s 防抖
-			static DWORD s_lastDump = 0;
-			const DWORD nowDump = ::GetTickCount();
-			if (s_lastDump == 0 || (nowDump - s_lastDump) >= 1000)
-			{
-				std::wstring tracePath;
-				std::wstring dumpWhy;
-				if (m_jog.SaveTraceToDefaultFile(tracePath, dumpWhy))
+				// disabled: keep idle and restore vision override if needed
+				if (m_sfVisionOverridden)
 				{
-					// 把路径附带到 why，方便你在 HUD/状态栏里直接看到文件在哪
-					why += L" (Trace-> ";
-					why += tracePath;
-					why += L")";
+					m_vision.SetMode(m_sfPrevVisionMode);
+					m_visionAlgoMode = m_sfPrevVisionMode;
+					m_sfVisionOverridden = false;
+				}
+				sfOut = SeeAndFetchStateMachine::Output{};
+				sfOut.state = m_sf.GetState();
+			}
+
+			// See&Fetch status
+			if (m_staticSfStatus.GetSafeHwnd())
+			{
+				CString sfs;
+				if (!m_sfEnabled)
+				{
+					sfs = L"SF:OFF";
 				}
 				else
 				{
-					why += L" (Trace导出失败: ";
-					why += dumpWhy;
-					why += L")";
+					// keep it short; long reason is still available in logs/HUD later
+					sfs.Format(L"SF:%d %s", (int)sfOut.state, sfOut.reason.c_str());
 				}
-				s_lastDump = nowDump;
+				m_staticSfStatus.SetWindowTextW(sfs);
 			}
 		}
 
-		// 更新 UI pose 文本（先显示 target，后续 HUD 会更丰富）
-		const auto pose = m_jog.GetTargetPose();
+		// 更新 UI pose 文本（读回估计）
+		ArmStateEstimator::ArmState st{};
+		(void)ArmStateEstimator::Estimate(m_motion, m_kc, st, nullptr);
+		const auto pose = st.joint5PoseBase;
 		CString s;
-		s.Format(L"Pose: (X=%.0f,Y=%.0f,Z=%.0f,p=%.1f)%s%s",
-		         pose.x_mm, pose.y_mm, pose.z_mm, pose.pitch_deg,
-		         manualActive ? L" [Manual]" : (useVs ? L" [VS]" : L""),
-		         (!ok && !why.empty()) ? L" [IK失败]" : L"");
+		s.Format(L"Pose: (X=%.0f,Y=%.0f,Z=%.0f,p=%.1f)",
+		         pose.x_mm, pose.y_mm, pose.z_mm, pose.pitch_deg);
 		m_staticMainPose.SetWindowTextW(s);
 
 		// 更新 HUD 叠加层状态（渲染线程会读取）
@@ -1878,21 +2092,8 @@ void C智能机械臂Dlg::OnTimer(UINT_PTR nIDEvent)
 			unsigned fps = 0, sinceMs = 0;
 			theApp.GetSerialSendStats(fps, sinceMs);
 			KinematicsOverlayService::Instance().UpdateSerialStats(fps, sinceMs);
-			KinematicsOverlayService::Instance().UpdateJog(manualActive,
-			                                              (m_staticMainJogPad.IsActive() ? m_staticMainJogPad.GetX() : fin.yaw),
-			                                              (m_staticMainJogPad.IsActive() ? m_staticMainJogPad.GetY() : fin.fwd),
-			                                              pose,
-			                                              ok,
-			                                              why);
-			KinematicsOverlayService::Instance().UpdateVisualServo(
-				vsEnable,
-				useVs,
-				vsOut.active,
-				(int)m_vs.GetMode(),
-				vsOut.errU,
-				vsOut.errV,
-				adv,
-				vsOut.reason);
+			KinematicsOverlayService::Instance().UpdateJog(false, 0.0, 0.0, pose, true, L"");
+			KinematicsOverlayService::Instance().UpdateVisualServo(false, false, false, 0, 0.0, 0.0, 0.0, L"");
 		}
 
 		CDialogEx::OnTimer(nIDEvent);
@@ -1993,7 +2194,6 @@ void C智能机械臂Dlg::OnStnClickedMainVideo()
 	obs.v = (double)pt.y;
 	obs.hasConfidence = true;
 	obs.confidence = 1.0;
-	m_vs.UpdateObservation(obs);
 }
 
 void C智能机械臂Dlg::OnDestroy()
@@ -2052,24 +2252,37 @@ void C智能机械臂Dlg::OnSize(UINT nType, int cx, int cy)
 		return;
 	}
 
-	// 统一尺寸（比资源默认稍大，避免 Win11/DPI 下按钮过小）
-	const int margin = 15;   // 增加边距：更“松”
-	const int topBarH = 50;  // 增加顶栏高度：更“松”
-	const int btnH = 24;
-	const int chkH = 20;
-	const int comboH = 200;
-	const int bottomBtnH = 26;
+	// ===== DPI 缩放因子（基准 96 DPI）=====
+	// 获取当前窗口的 DPI，按比例缩放所有布局常量
+	HDC hdc = ::GetDC(GetSafeHwnd());
+	const int dpiX = ::GetDeviceCaps(hdc, LOGPIXELSX);
+	::ReleaseDC(GetSafeHwnd(), hdc);
+	const double dpiScale = (double)dpiX / 96.0;
+	auto scale = [dpiScale](int v) -> int { return (int)std::lround((double)v * dpiScale); };
+
+	// 统一尺寸（按 DPI 缩放，避免 Win11/高缩放下按钮过小）
+	const int margin = scale(12);    // 边距
+	const int topBarH = scale(40);   // 顶栏高度
+	const int btnH = scale(22);
+	const int chkH = scale(18);
+	const int comboH = scale(200);   // ComboBox 下拉区高度（不随 DPI 变化太多）
+	const int bottomBtnH = scale(24);
 
 	const int bottomBtnY = std::max(topBarH + margin, cy - margin - bottomBtnH);
 	const int bottomAreaTop = bottomBtnY - margin;
 
-	// 右侧面板固定宽度（与资源一致略放大）
-	const int rightW = 280; // 进一步加宽面板：给右侧更多空间
+	// ===== 右侧面板宽度：按比例分配，但有最小可读宽度 =====
+	// 右侧面板占窗口宽度的 ~30%，但不低于 300px（DPI 缩放后），不高于 420px（DPI 缩放后）
+	const int rightMinW = scale(300);
+	const int rightMaxW = scale(420);
+	int rightW = cx * 30 / 100;
+	if (rightW < rightMinW) rightW = rightMinW;
+	if (rightW > rightMaxW) rightW = rightMaxW;
 	int rightX = cx - margin - rightW;
 	if (rightX < margin) rightX = margin;
 
-	// 用 DeferWindowPos 降低闪烁/减少“缩小再放大”绘制异常
-	HDWP hdwp = BeginDeferWindowPos(48);
+	// 用 DeferWindowPos 降低闪烁/减少"缩小再放大"绘制异常
+	HDWP hdwp = BeginDeferWindowPos(50);
 	auto defer = [&](CWnd& w, int x, int y, int wdt, int hgt)
 	{
 		if (!w.GetSafeHwnd()) return;
@@ -2084,122 +2297,143 @@ void C智能机械臂Dlg::OnSize(UINT nType, int cx, int cy)
 
 	// ===== 顶栏（垂直居中）=====
 	int x = margin;
-	const int yTop = (topBarH - btnH) / 2 + 2;
-	const int yChk = (topBarH - chkH) / 2 + 2;
+	const int yTop = (topBarH - btnH) / 2 + scale(2);
+	const int yChk = (topBarH - chkH) / 2 + scale(2);
 
-	deferId(IDC_MAIN_LBL_CAMERA, x, yChk + 2, 40, chkH);
-	x += 42;
-	defer(m_comboMainCamera, x, yTop - 1, 220, comboH);
-	x += 230;
-	defer(m_btnMainCamRefresh, x, yTop, 50, btnH);
-	x += 60;
-	defer(m_btnMainCamStart, x, yTop, 50, btnH);
-	x += 60;
-	defer(m_btnMainCamStop, x, yTop, 50, btnH);
-	x += 70; // 分隔
+	deferId(IDC_MAIN_LBL_CAMERA, x, yChk + scale(2), scale(40), chkH);
+	x += scale(42);
+	defer(m_comboMainCamera, x, yTop - 1, scale(180), comboH);
+	x += scale(190);
+	defer(m_btnMainCamRefresh, x, yTop, scale(45), btnH);
+	x += scale(50);
+	defer(m_btnMainCamStart, x, yTop, scale(45), btnH);
+	x += scale(50);
+	defer(m_btnMainCamStop, x, yTop, scale(45), btnH);
+	x += scale(55); // 分隔
 
-	defer(m_chkMainMirror, x, yChk, 50, chkH);
-	x += 55;
-	deferId(IDC_MAIN_LBL_ROTATION, x, yChk + 2, 40, chkH);
-	x += 42;
-	defer(m_comboMainRotation, x, yTop - 1, 60, comboH);
-	x += 70;
-	defer(m_chkMainCrosshair, x, yChk, 60, chkH);
-	x += 70;
-	defer(m_chkMainGrid, x, yChk, 60, chkH);
+	defer(m_chkMainMirror, x, yChk, scale(45), chkH);
+	x += scale(50);
+	deferId(IDC_MAIN_LBL_ROTATION, x, yChk + scale(2), scale(35), chkH);
+	x += scale(38);
+	defer(m_comboMainRotation, x, yTop - 1, scale(55), comboH);
+	x += scale(60);
+	defer(m_chkMainCrosshair, x, yChk, scale(55), chkH);
+	x += scale(60);
+	defer(m_chkMainGrid, x, yChk, scale(55), chkH);
 
 	// 右侧状态（锚定右上角）
-	defer(m_staticMainCamInfo, cx - margin - 130, yChk, 130, chkH);
-	defer(m_staticMainCamStatus, cx - margin - 130 - 100, yChk, 95, chkH);
+	const int camInfoW = scale(120);
+	const int camStatusW = scale(90);
+	defer(m_staticMainCamInfo, cx - margin - camInfoW, yChk, camInfoW, chkH);
+	defer(m_staticMainCamStatus, cx - margin - camInfoW - camStatusW - scale(5), yChk, camStatusW, chkH);
 
-	// ===== 视频区域 =====
+	// ===== 左侧区域：视频 =====
+	// 视频区域（左侧，占满剩余高度）
 	const int videoX = margin;
-	const int videoY = topBarH + margin; // 增加与顶栏间距
-	const int videoW = std::max(64, rightX - margin - videoX);
-	const int videoH = std::max(64, bottomAreaTop - videoY);
+	const int videoY = topBarH + margin;
+	const int videoW = std::max(scale(64), rightX - margin - margin);
+	const int videoH = std::max(scale(64), bottomAreaTop - videoY);
+	
 	defer(m_staticMainVideo, videoX, videoY, videoW, videoH);
 
-	// ===== 右侧面板 =====
+	// ===== 右侧面板（按 DPI 缩放）=====
 	const int panelTop = topBarH + margin;
-	const int serialH = 90;
-	const int vsH = 115;     // 视觉跟随组：两行复选框 + 模式 + 推进 + 状态
-	const int visionH = 75;  // 视觉识别组：识别启用 + 算法下拉
-	const int statusH = 90;
-	const int spacing = 12;
+	const int serialH = scale(80);
+	const int vsH = scale(105);      // 视觉跟随组
+	const int visionH = scale(65);   // 视觉识别组
+	const int statusH = scale(65);   // 状态组
+	const int spacing = scale(8);    // 组间距
+	const int innerPad = scale(12);  // 组内边距
 
-	// 串口组
+	// 1. 串口组
 	defer(m_grpMainSerial, rightX, panelTop, rightW, serialH);
-	deferId(IDC_MAIN_LBL_SERIAL_COM, rightX + 15, panelTop + 25, 40, chkH);
-	defer(m_comboMainCom, rightX + 60, panelTop + 23, 90, comboH);
-	defer(m_btnMainComRefresh, rightX + 160, panelTop + 23, 50, btnH);
-	defer(m_btnMainComConnect, rightX + 215, panelTop + 23, 50, btnH);
-	defer(m_chkMainSimulate, rightX + 15, panelTop + 58, 60, chkH);
-	defer(m_staticMainSerialStatus, rightX + 85, panelTop + 58, rightW - 100, chkH);
+	deferId(IDC_MAIN_LBL_SERIAL_COM, rightX + innerPad, panelTop + scale(22), scale(40), chkH);
+	const int comComboW = std::max(scale(70), (rightW - scale(180)) / 2);
+	defer(m_comboMainCom, rightX + innerPad + scale(42), panelTop + scale(20), comComboW, comboH);
+	const int btnRefreshX = rightX + innerPad + scale(42) + comComboW + scale(5);
+	defer(m_btnMainComRefresh, btnRefreshX, panelTop + scale(20), scale(45), btnH);
+	defer(m_btnMainComConnect, btnRefreshX + scale(50), panelTop + scale(20), scale(45), btnH);
+	defer(m_chkMainSimulate, rightX + innerPad, panelTop + scale(50), scale(55), chkH);
+	defer(m_staticMainSerialStatus, rightX + innerPad + scale(60), panelTop + scale(50), rightW - innerPad * 2 - scale(60), chkH);
 
-	// 视觉跟随组（只放“跟随相关”控件）
+	// 2. 视觉跟随组
 	const int vsY = panelTop + serialH + spacing;
 	defer(m_grpMainVs, rightX, vsY, rightW, vsH);
 	
 	// Row 1: VS启用 + 模式
-	defer(m_chkVsEnable, rightX + 15, vsY + 25, 65, chkH);
-	deferId(IDC_MAIN_LBL_VS_MODE, rightX + 85, vsY + 25, 40, chkH);
-	defer(m_comboVsMode, rightX + 125, vsY + 23, rightW - 140, comboH);
+	defer(m_chkVsEnable, rightX + innerPad, vsY + scale(22), scale(55), chkH);
+	deferId(IDC_MAIN_LBL_VS_MODE, rightX + innerPad + scale(58), vsY + scale(22), scale(35), chkH);
+	defer(m_comboVsMode, rightX + innerPad + scale(95), vsY + scale(20), rightW - innerPad * 2 - scale(95), comboH);
 
 	// Row 2: 覆盖 + 仅测试
-	defer(m_chkVsOverride, rightX + 15, vsY + 50, 55, chkH);
-	defer(m_chkVsNoDrive, rightX + 75, vsY + 50, 60, chkH);
+	defer(m_chkVsOverride, rightX + innerPad, vsY + scale(45), scale(50), chkH);
+	defer(m_chkVsNoDrive, rightX + innerPad + scale(55), vsY + scale(45), scale(55), chkH);
 
 	// Row 3: 推进
-	deferId(IDC_MAIN_LBL_VS_ADVANCE, rightX + 15, vsY + 74, 40, chkH);
-	defer(m_sliderVsAdvance, rightX + 60, vsY + 72, rightW - 75, 20);
+	deferId(IDC_MAIN_LBL_VS_ADVANCE, rightX + innerPad, vsY + scale(66), scale(35), chkH);
+	defer(m_sliderVsAdvance, rightX + innerPad + scale(38), vsY + scale(64), rightW - innerPad * 2 - scale(38), scale(18));
 
 	// Row 4: 状态
-	defer(m_staticVsStatus, rightX + 15, vsY + 94, rightW - 30, chkH);
+	defer(m_staticVsStatus, rightX + innerPad, vsY + scale(84), rightW - innerPad * 2, chkH);
 
-	// 视觉识别组（只放“识别相关”控件）
+	// 3. 视觉识别组
 	const int visionY = vsY + vsH + spacing;
 	defer(m_grpMainVision, rightX, visionY, rightW, visionH);
-	defer(m_chkVisionProcEnable, rightX + 15, visionY + 25, 70, chkH);
-	defer(m_staticVisionAlgo, rightX + 90, visionY + 25, 40, chkH);
-	defer(m_comboVisionAlgo, rightX + 130, visionY + 23, rightW - 145, comboH);
+	defer(m_chkVisionProcEnable, rightX + innerPad, visionY + scale(22), scale(65), chkH);
+	defer(m_staticVisionAlgo, rightX + innerPad + scale(68), visionY + scale(22), scale(35), chkH);
+	defer(m_comboVisionAlgo, rightX + innerPad + scale(105), visionY + scale(20), rightW - innerPad * 2 - scale(105), comboH);
 
-	// Jog 组（JogPad 强制正方形）
-	const int jogY = visionY + visionH + spacing;
-	// 计算可用高度，决定正方形边长（既要“正方形”，也要避免被挤爆）
-	const int panelH = std::max(0, bottomAreaTop - panelTop);
-	const int availForJog = std::max(0, panelH - serialH - spacing - vsH - spacing - visionH - spacing - statusH - spacing);
+	// 4. 状态组 + 姿态组
+	const int panelBottom = bottomAreaTop;
+	const int statusTop = visionY + visionH + spacing;
 
-	const int padInnerMargin = 20;
-	const int sliderAreaH = 70; // 两条滑条+标签的预算高度
-	const int maxPadByWidth = rightW - padInnerMargin * 2;
-	const int maxPadByHeight = std::max(60, availForJog - 25 - 10 - sliderAreaH - 10);
-	// 允许缩小到 60 以适应低分辨率屏幕，避免撑破布局导致的重叠
-	const int padSide = std::max(60, std::min(maxPadByWidth, maxPadByHeight));
-
-	const int jogGroupH = 25 + padSide + 10 + sliderAreaH + 10;
-	defer(m_grpMainJog, rightX, jogY, rightW, jogGroupH);
-
-	const int padX = rightX + padInnerMargin;
-	const int padY = jogY + 25;
-	defer(m_staticMainJogPad, padX, padY, padSide, padSide);
-
-	const int sY1 = padY + padSide + 15;
-	deferId(IDC_MAIN_LBL_SPEED_MM, rightX + 15, sY1, 90, chkH);
-	defer(m_sliderSpeedMm, rightX + 110, sY1 - 2, rightW - 125, 20);
-	deferId(IDC_MAIN_LBL_PITCH_SPEED, rightX + 15, sY1 + 30, 90, chkH);
-	defer(m_sliderSpeedPitch, rightX + 110, sY1 + 28, rightW - 125, 20);
-
-	// 状态组（放在 Jog 组下方）
-	const int statusY = jogY + jogGroupH + spacing;
+	// 状态组固定高度
+	const int statusY = statusTop;
 	defer(m_grpMainStatus, rightX, statusY, rightW, statusH);
-	defer(m_staticMainPose, rightX + 15, statusY + 25, rightW - 30, chkH);
-	defer(m_btnEmergencyStop, rightX + 15, statusY + 50, rightW - 30, 30);
+	defer(m_staticMainPose, rightX + innerPad, statusY + scale(20), rightW - innerPad * 2, chkH);
+	defer(m_btnEmergencyStop, rightX + innerPad, statusY + scale(40), rightW - innerPad * 2, scale(20));
 
-	// ===== 底栏按钮 =====
-	deferId(IDC_BTN_DIAGNOSTICS, margin, bottomBtnY, 100, bottomBtnH);
-	deferId(IDC_BTN_EXPORT_PARAMS, margin + 110, bottomBtnY, 100, bottomBtnH);
-	deferId(IDC_BTN_IMPORT_PARAMS, margin + 220, bottomBtnY, 100, bottomBtnH);
-	deferId(IDCANCEL, cx - margin - 100, bottomBtnY, 100, bottomBtnH);
+	// 5. 姿态组（获得全部剩余空间）
+	const int postureY = statusY + statusH + spacing;
+	const int postureH = std::max(scale(100), panelBottom - postureY);
+	if (postureY < panelBottom)
+	{
+		defer(m_grpMainPosture, rightX, postureY, rightW, postureH);
+		defer(m_ctrlPosture, rightX + scale(5), postureY + scale(15), rightW - scale(10), std::max(scale(10), postureH - scale(20)));
+	}
+
+	// ===== 底栏按钮（按 DPI 缩放 + See&Fetch 控件自适应）=====
+	const int botBtnW = scale(85);
+	const int botBtnGap = scale(8);
+	int bx = margin;
+	deferId(IDC_BTN_DIAGNOSTICS, bx, bottomBtnY, botBtnW, bottomBtnH);
+	bx += botBtnW + botBtnGap;
+	deferId(IDC_BTN_EXPORT_PARAMS, bx, bottomBtnY, botBtnW, bottomBtnH);
+	bx += botBtnW + botBtnGap;
+	deferId(IDC_BTN_IMPORT_PARAMS, bx, bottomBtnY, botBtnW, bottomBtnH);
+	bx += botBtnW + botBtnGap + scale(10); // 多留一点间距
+
+	// See&Fetch 控件组
+	const int sfChkW = scale(70);
+	const int sfGrabChkW = scale(80);
+	const int sfBtnW = scale(40);
+	deferId(IDC_MAIN_CHECK_SF_ENABLE, bx, bottomBtnY + scale(3), sfChkW, chkH);
+	bx += sfChkW + scale(4);
+	deferId(IDC_MAIN_CHECK_SF_GRABTEST, bx, bottomBtnY + scale(3), sfGrabChkW, chkH);
+	bx += sfGrabChkW + botBtnGap;
+	deferId(IDC_MAIN_BTN_SF_START, bx, bottomBtnY, sfBtnW, bottomBtnH);
+	bx += sfBtnW + scale(4);
+	deferId(IDC_MAIN_BTN_SF_CANCEL, bx, bottomBtnY, sfBtnW, bottomBtnH);
+	bx += sfBtnW + scale(4);
+	deferId(IDC_MAIN_BTN_SF_ESTOP, bx, bottomBtnY, sfBtnW, bottomBtnH);
+	bx += sfBtnW + botBtnGap;
+	// SF 状态文本：占据剩余空间（右侧留出退出按钮位置）
+	const int cancelBtnW = scale(75);
+	const int sfStatusW = std::max(scale(60), cx - bx - margin - cancelBtnW - botBtnGap);
+	deferId(IDC_MAIN_STATIC_SF_STATUS, bx, bottomBtnY + scale(4), sfStatusW, chkH);
+
+	// 退出按钮（靠右）
+	deferId(IDCANCEL, cx - margin - cancelBtnW, bottomBtnY, cancelBtnW, bottomBtnH);
 
 	EndDeferWindowPos(hdwp);
 
@@ -2213,11 +2447,17 @@ void C智能机械臂Dlg::OnSize(UINT nType, int cx, int cy)
 
 void C智能机械臂Dlg::OnGetMinMaxInfo(MINMAXINFO* lpMMI)
 {
-	// 最小窗口尺寸：避免控件挤压到不可用
-	if (lpMMI)
+	// 最小窗口尺寸（按 DPI 缩放）：避免控件挤压到不可用
+	if (lpMMI && GetSafeHwnd())
 	{
-		lpMMI->ptMinTrackSize.x = 1024; // 右侧加宽 + 顶栏更松，避免顶部控件拥挤
-		lpMMI->ptMinTrackSize.y = 720;  // 右侧 JogPad 正方形需要更多垂直空间
+		HDC hdc = ::GetDC(GetSafeHwnd());
+		const int dpiX = ::GetDeviceCaps(hdc, LOGPIXELSX);
+		::ReleaseDC(GetSafeHwnd(), hdc);
+		const double dpiScale = (double)dpiX / 96.0;
+
+		// 基准尺寸（96 DPI 下）：右侧面板最小 300px + 左侧视频最小 350px + 边距
+		lpMMI->ptMinTrackSize.x = (LONG)std::lround(900.0 * dpiScale);
+		lpMMI->ptMinTrackSize.y = (LONG)std::lround(650.0 * dpiScale);
 	}
 	CDialogEx::OnGetMinMaxInfo(lpMMI);
 }

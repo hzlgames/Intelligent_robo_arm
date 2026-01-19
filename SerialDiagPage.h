@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "ArmCommsService.h"
+#include "MotionConfig.h"
 
 // Serial diagnostics page:
 // - enumerate COM ports
@@ -13,6 +14,9 @@
 // - send sample protocol frames
 // - monitor TX/RX as hex + parsed summaries
 // - export log
+//
+// 注意：限位现已统一使用 MotionConfig，存储在 Motion\J%d 配置节。
+// 旧的 ServoLimits 配置节已废弃。
 class CSerialDiagPage : public CPropertyPage
 {
 	DECLARE_DYNAMIC(CSerialDiagPage)
@@ -56,9 +60,9 @@ private:
 	void SetIntToEdit(CEdit& edit, int v);
 	void LoadManualControlsFromProfile();
 	void SaveManualControlsToProfile();
-	void LoadServoLimitsFromProfile();
-	void SaveServoLimitToProfile(uint8_t id, bool isMin, int v);
-	int ApplySafeClamp(uint8_t id, int pos, bool* clamped);
+
+	// 使用 MotionConfig 统一限位系统（通过 ServoId 访问）
+	int ApplySafeClamp(uint8_t servoId, int pos, bool* clamped);
 
 private:
 	CComboBox m_comboCom;
@@ -76,9 +80,8 @@ private:
 	std::vector<CString> m_logLines;
 	int m_logToken = 0;
 
-	// Safe limits (ids 1..6)
-	int m_minPos[7] = { 0 };
-	int m_maxPos[7] = { 0 };
+	// 统一限位配置（通过 MotionConfig 访问，以 Joint 为单位存储）
+	MotionConfig m_motionCfg;
 };
 
 

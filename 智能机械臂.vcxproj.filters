@@ -66,19 +66,16 @@
     <ClInclude Include="preview.h">
       <Filter>头文件</Filter>
     </ClInclude>
-    <ClInclude Include="ControlDiagPage.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
     <ClInclude Include="SettingsIo.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="VisualServoController.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="VisualServoTypes.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="VisionService.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="GrabTestController.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="VisionDetector.h">
@@ -93,13 +90,13 @@
     <ClInclude Include="VisionOverlayService.h">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="ArmPostureCtrl.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
     <ClInclude Include="ArmStateEstimator.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="KinematicsDiagPage.h">
-      <Filter>头文件</Filter>
-    </ClInclude>
-    <ClInclude Include="KinTestDiagPage.h">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="ToolConfig.h">
@@ -149,19 +146,16 @@
     <ClCompile Include="SerialPortWin32.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
-    <ClCompile Include="ControlDiagPage.cpp">
-      <Filter>源文件</Filter>
-    </ClCompile>
     <ClCompile Include="pch.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="SettingsIo.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
-    <ClCompile Include="VisualServoController.cpp">
+    <ClCompile Include="VisionService.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
-    <ClCompile Include="VisionService.cpp">
+    <ClCompile Include="GrabTestController.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="VisionDetector.cpp">
@@ -176,13 +170,13 @@
     <ClCompile Include="VisionOverlayService.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="ArmPostureCtrl.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
     <ClCompile Include="ArmStateEstimator.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="KinematicsDiagPage.cpp">
-      <Filter>源文件</Filter>
-    </ClCompile>
-    <ClCompile Include="KinTestDiagPage.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="ToolConfig.cpp">

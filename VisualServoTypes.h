@@ -53,9 +53,15 @@ struct VisualObservation
 	double confidence = 0.0;
 };
 
-// 视觉伺服输出：用于直接喂给 JogController 的归一化输入
-// 注意：这里刻意保持与 JogController::InputState 一致的 [-1,1] 约定，
-// 这样未来可以“无侵入”接入现有 JogController。
+// 视觉伺服模式（保留枚举值以兼容历史配置）
+enum class VisualServoMode
+{
+	CenterTarget = 0,
+	FollowRay = 1,
+	LookAndMove = 2,
+};
+
+// 视觉伺服输出：归一化输入 [-1,1]（保留旧接口形状，便于后续扩展）
 struct VisualServoOutput
 {
 	bool active = false;
@@ -73,6 +79,10 @@ struct VisualServoOutput
 	// Debug：本次输出的解释
 	std::wstring reason;
 };
+
+
+
+
 
 
 

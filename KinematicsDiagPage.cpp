@@ -113,9 +113,8 @@ void CKinematicsDiagPage::OnBnClickedSaveApply()
 		return;
 	}
 
-	// 广播：让主界面/Jog/其它诊断页立即刷新
 	BroadcastSettingsImportedToThread();
-	AfxMessageBox(L"已保存并应用。建议进行一次轻微 Jog 验证是否可达。");
+	AfxMessageBox(L"已保存并应用。");
 }
 
 int CKinematicsDiagPage::GetIntFromEdit(const CEdit& edit, int fallback) const
@@ -141,12 +140,10 @@ void CKinematicsDiagPage::InitJointMapControls()
 
 	for (int j = 1; j <= KinematicsConfig::kJointCount; j++)
 	{
-		// 资源ID按 joint 连续排列（见 Resource.h）
 		m_editJPos0[j].SubclassDlgItem(IDC_KIN_EDIT_J1_POS0 + (j - 1), this);
 		m_editJPosPlus[j].SubclassDlgItem(IDC_KIN_EDIT_J1_POSPLUS + (j - 1), this);
 		m_editJPlusDeg[j].SubclassDlgItem(IDC_KIN_EDIT_J1_PLUSDEG + (j - 1), this);
 		m_editJZeroOffMdeg[j].SubclassDlgItem(IDC_KIN_EDIT_J1_ZEROOFF_MDEG + (j - 1), this);
-		m_checkJPhysInv[j].SubclassDlgItem(IDC_KIN_CHECK_J1_PHYSINV + (j - 1), this);
 	}
 
 	m_bJointMapInited = true;
@@ -176,7 +173,6 @@ void CKinematicsDiagPage::LoadFromProfileToUi()
 	SetIntToEdit(m_editCamGripY, (int)std::lround(c2g.y));
 	SetIntToEdit(m_editCamGripZ, (int)std::lround(c2g.z));
 
-	// Joint mapping（原始对应关系参数）
 	for (int j = 1; j <= KinematicsConfig::kJointCount; j++)
 	{
 		const auto& jc = kc.GetJoint(j);
@@ -184,7 +180,6 @@ void CKinematicsDiagPage::LoadFromProfileToUi()
 		SetIntToEdit(m_editJPosPlus[j], jc.posAtPlusDeg);
 		SetIntToEdit(m_editJPlusDeg[j], jc.plusDeg);
 		SetIntToEdit(m_editJZeroOffMdeg[j], (int)std::lround(jc.zeroOffsetDeg * 1000.0));
-		m_checkJPhysInv[j].SetCheck(jc.physicalInvert ? BST_CHECKED : BST_UNCHECKED);
 	}
 }
 
@@ -208,7 +203,6 @@ bool CKinematicsDiagPage::SaveFromUiToProfile(std::wstring& outWhy)
 	const int lWrist = GetIntFromEdit(m_editLWrist, 95);
 	const int lCam = GetIntFromEdit(m_editLCam, 55);
 
-	// 基础保护：避免输入 0/负数导致 IK/FK 崩坏
 	if (!validPos(lBase, 10, 500, L"L_base")) return false;
 	if (!validPos(lArm1, 10, 500, L"L_arm1")) return false;
 	if (!validPos(lArm2, 10, 500, L"L_arm2")) return false;
@@ -224,7 +218,6 @@ bool CKinematicsDiagPage::SaveFromUiToProfile(std::wstring& outWhy)
 	L.L_wrist = (double)lWrist;
 	L.L_cam = (double)lCam;
 
-	// Joint mapping（原始对应关系参数）
 	auto validJointInt = [&](int v, int minV, int maxV, const wchar_t* name) -> bool
 	{
 		if (v < minV || v > maxV)
@@ -240,9 +233,8 @@ bool CKinematicsDiagPage::SaveFromUiToProfile(std::wstring& outWhy)
 		const int pos0 = GetIntFromEdit(m_editJPos0[j], kc.GetJoint(j).posAt0Deg);
 		const int posPlus = GetIntFromEdit(m_editJPosPlus[j], kc.GetJoint(j).posAtPlusDeg);
 		int plusDeg = GetIntFromEdit(m_editJPlusDeg[j], kc.GetJoint(j).plusDeg);
-		if (plusDeg == 0) plusDeg = 45; // 防止除0
+		if (plusDeg == 0) plusDeg = 45;
 		const int zeroMdeg = GetIntFromEdit(m_editJZeroOffMdeg[j], (int)std::lround(kc.GetJoint(j).zeroOffsetDeg * 1000.0));
-		const bool physInv = (m_checkJPhysInv[j].GetCheck() == BST_CHECKED);
 
 		if (!validJointInt(pos0, 0, 1000, L"Pos0")) return false;
 		if (!validJointInt(posPlus, 0, 1000, L"Pos+")) return false;
@@ -254,10 +246,8 @@ bool CKinematicsDiagPage::SaveFromUiToProfile(std::wstring& outWhy)
 		jc.posAtPlusDeg = posPlus;
 		jc.plusDeg = plusDeg;
 		jc.zeroOffsetDeg = (double)zeroMdeg / 1000.0;
-		jc.physicalInvert = physInv;
 	}
 
-	// 一次性保存（links + joints + safety）
 	kc.SaveAll();
 
 	ToolConfig tc;
@@ -274,5 +264,4 @@ bool CKinematicsDiagPage::SaveFromUiToProfile(std::wstring& outWhy)
 
 	return true;
 }
-
 

@@ -3,16 +3,13 @@
 #include <afxcmn.h>
 #include <afxdlgs.h>
 
-#include <vector>
-
 #include "MotionController.h"
 
 // Motion diagnostics / control page:
-// - joint calibration (servoId/min/max/home/invert)
-// - joint move + Home
+// - servo calibration (servoId/min/max/home)
+// - direct servo move + Home
 // - ReadAll (0x15)
-// - demo keyframe script playback
-// - shows shared comms logs
+// - shared comms logs
 class CMotionDiagPage : public CPropertyPage
 {
 	DECLARE_DYNAMIC(CMotionDiagPage)
@@ -38,8 +35,6 @@ protected:
 	afx_msg void OnBnClickedHome();
 	afx_msg void OnBnClickedReadAll();
 
-	afx_msg void OnBnClickedDemoPlay();
-	afx_msg void OnBnClickedStop();
 	afx_msg void OnTimer(UINT_PTR nIDEvent);
 	afx_msg void OnDestroy();
 	afx_msg LRESULT OnSettingsImported(WPARAM wParam, LPARAM lParam);
@@ -56,8 +51,6 @@ private:
 	int GetIntFromEdit(const CEdit& edit, int fallback) const;
 	void SetIntToEdit(CEdit& edit, int v);
 
-	std::vector<MotionController::Keyframe> BuildDemoScript() const;
-
 private:
 	CComboBox m_comboCom;
 	CButton m_checkSim;
@@ -68,12 +61,11 @@ private:
 	CEdit m_editMin;
 	CEdit m_editMax;
 	CEdit m_editHome;
-	CButton m_checkInvert;
+	// 注：方向信息已统一由 KinematicsConfig 的两点标定数据决定，不再需要 invert 控件。
 
 	CEdit m_editTarget;
 	CEdit m_editTime;
 
-	CButton m_checkLoop;
 	CEdit m_editLog;
 
 	bool m_useSim = true;

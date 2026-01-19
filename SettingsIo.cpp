@@ -145,6 +145,13 @@ SettingsIo::Result SettingsIo::ExportToIni(const std::wstring& iniPath)
 		ExportProfileInt(iniPath, sec, L"Invert", 0);
 	}
 
+	// AutoHome (连接后自动归位的初始角度)
+	ExportProfileInt(iniPath, L"AutoHome", L"J1Deg", 0);
+	ExportProfileInt(iniPath, L"AutoHome", L"J2Deg", -30);
+	ExportProfileInt(iniPath, L"AutoHome", L"J3Deg", 60);
+	ExportProfileInt(iniPath, L"AutoHome", L"J4Deg", 30);
+	ExportProfileInt(iniPath, L"AutoHome", L"J5Deg", 0);
+
 	// ===== Kinematics (Arm model calibration) =====
 	// Links (mm)
 	ExportProfileInt(iniPath, L"Kinematics\\Links", L"L_base_mm", 80);
@@ -187,7 +194,7 @@ SettingsIo::Result SettingsIo::ExportToIni(const std::wstring& iniPath)
 	ExportProfileInt(iniPath, L"Tool\\Offsets", L"CamToGrip_Z_mm", 40);
 
 	// ===== Vision (Visual compute) =====
-	// Mode: 0=Auto, 1=BrightestPoint, 2=Aruco, 3=ColorTrack, 4=Detector, 5=Hand
+	// Mode: 0=Auto, 1=BrightestPoint, 2=Aruco, 3=ColorTrack, 4=Detector, 5=HandSticker, 6=HandLandmarks, 7=Gemini
 	ExportProfileInt(iniPath, L"Vision", L"Mode", 0);
 	// AlgoEnabled: 0=手动(点击，不跑识别), 1=启用视觉识别（与 Mode 搭配）
 	ExportProfileInt(iniPath, L"Vision", L"AlgoEnabled", 1);
@@ -228,6 +235,12 @@ SettingsIo::Result SettingsIo::ExportToIni(const std::wstring& iniPath)
 	ExportProfileInt(iniPath, L"Vision\\Detector", L"InputH", 640);
 	ExportProfileInt(iniPath, L"Vision\\Detector", L"Conf_milli", 500); // 0..1000
 	ExportProfileInt(iniPath, L"Vision\\Detector", L"Nms_milli", 400);  // 0..1000
+
+	// Gemini (cloud)
+	ExportProfileString(iniPath, L"Vision\\Gemini", L"ApiKey", L"");
+	ExportProfileString(iniPath, L"Vision\\Gemini", L"Model", L"gemini-3-flash-preview");
+	ExportProfileInt(iniPath, L"Vision\\Gemini", L"IntervalMs", 2000);
+	ExportProfileString(iniPath, L"Vision\\Gemini", L"Proxy", L"");
 
 	// Hand (Palm + Landmarks ONNX)
 	ExportProfileString(iniPath, L"Vision\\Hand", L"PalmOnnxPath", L"");
@@ -299,6 +312,45 @@ SettingsIo::Result SettingsIo::ExportToIni(const std::wstring& iniPath)
 	ExportProfileInt(iniPath, L"SeeAndFetch\\Place", L"J2DownStepDeg_milli", 2000);
 	ExportProfileInt(iniPath, L"SeeAndFetch\\Place", L"SignJ2Down", +1);
 	ExportProfileInt(iniPath, L"SeeAndFetch\\Place", L"MaxAttempts", 2);
+
+	// ===== GrabTest (standalone Gemini fetch) =====
+	ExportProfileInt(iniPath, L"GrabTest", L"Enabled", 0);
+	ExportProfileInt(iniPath, L"GrabTest", L"LostFramesToAbort", 10);
+	ExportProfileInt(iniPath, L"GrabTest", L"AcquireStableFrames", 5);
+	ExportProfileInt(iniPath, L"GrabTest\\Timing", L"MinCommandIntervalMs", 120);
+	ExportProfileInt(iniPath, L"GrabTest\\Timing", L"DefaultMoveTimeMs", 220);
+	ExportProfileInt(iniPath, L"GrabTest\\Timing", L"LockAfterMoveMs", 240);
+	ExportProfileInt(iniPath, L"GrabTest\\Find", L"DeadbandPx", 10);
+	ExportProfileInt(iniPath, L"GrabTest\\Find", L"CoarseCenterPx", 60);
+	ExportProfileInt(iniPath, L"GrabTest\\Find", L"StableCenterFrames", 3);
+	ExportProfileInt(iniPath, L"GrabTest\\Find", L"Yaw_kDegPerPx_milli", 30);
+	ExportProfileInt(iniPath, L"GrabTest\\Find", L"Yaw_MinStepDeg_milli", 600);
+	ExportProfileInt(iniPath, L"GrabTest\\Find", L"Yaw_MaxStepDeg_milli", 3500);
+	ExportProfileInt(iniPath, L"GrabTest\\Find", L"Pitch_kDegPerPx_milli", 30);
+	ExportProfileInt(iniPath, L"GrabTest\\Find", L"Pitch_MinStepDeg_milli", 600);
+	ExportProfileInt(iniPath, L"GrabTest\\Find", L"Pitch_MaxStepDeg_milli", 3500);
+	ExportProfileInt(iniPath, L"GrabTest\\Find", L"MaxPitchStepDeg_milli", 8000);
+	ExportProfileInt(iniPath, L"GrabTest\\Find", L"CenterOffsetU", 0);
+	ExportProfileInt(iniPath, L"GrabTest\\Find", L"CenterOffsetV", 0);
+	ExportProfileInt(iniPath, L"GrabTest\\Find", L"MinServoPosChange", 8);
+	ExportProfileInt(iniPath, L"GrabTest\\Find", L"SignJ1FromErrU", -1);
+	ExportProfileInt(iniPath, L"GrabTest\\Find", L"SignJ4FromErrV", -1);
+	ExportProfileInt(iniPath, L"GrabTest\\Find", L"J3_kDegPerPx_milli", 30);
+	ExportProfileInt(iniPath, L"GrabTest\\Find", L"J3_MinStepDeg_milli", 600);
+	ExportProfileInt(iniPath, L"GrabTest\\Find", L"J3_MaxStepDeg_milli", 3500);
+	ExportProfileInt(iniPath, L"GrabTest\\Find", L"SignJ3FromErrV", -1);
+	ExportProfileInt(iniPath, L"GrabTest\\Approach", L"TimeToFetchStableFrames", 2);
+	ExportProfileInt(iniPath, L"GrabTest\\Approach", L"MaxAdvanceSteps", 60);
+	ExportProfileInt(iniPath, L"GrabTest\\Approach", L"J2AdvanceStepDeg_milli", 2000);
+	ExportProfileInt(iniPath, L"GrabTest\\Approach", L"SignJ2Advance", -1);
+	ExportProfileInt(iniPath, L"GrabTest\\Gripper", L"JointIndex", 6);
+	ExportProfileInt(iniPath, L"GrabTest\\Gripper", L"OpenPos", 650);
+	ExportProfileInt(iniPath, L"GrabTest\\Gripper", L"ClosePos", 350);
+	ExportProfileInt(iniPath, L"GrabTest\\Gripper", L"CloseStepPos", 25);
+	ExportProfileInt(iniPath, L"GrabTest\\Gripper", L"CloseMoveTimeMs", 450);
+	ExportProfileInt(iniPath, L"GrabTest\\Gripper", L"MaxCloseSteps", 12);
+	ExportProfileInt(iniPath, L"GrabTest\\Return", L"ReturnToStartPose", 1);
+	ExportProfileInt(iniPath, L"GrabTest\\Return", L"ReturnTimeMs", 1200);
 	ExportProfileInt(iniPath, L"SeeAndFetch\\Place", L"RetryRetreatSteps", 8);
 	ExportProfileInt(iniPath, L"SeeAndFetch\\Place", L"RetreatSteps", 6);
 	ExportProfileInt(iniPath, L"SeeAndFetch\\Return", L"ReturnToStartPose", 1);
@@ -374,6 +426,13 @@ SettingsIo::Result SettingsIo::ImportFromIni(const std::wstring& iniPath)
 		AfxGetApp()->WriteProfileInt(sec, L"Home", homeV);
 		AfxGetApp()->WriteProfileInt(sec, L"Invert", invert);
 	}
+
+	// AutoHome (连接后自动归位的初始角度)
+	ImportProfileInt(iniPath, L"AutoHome", L"J1Deg", 0);
+	ImportProfileInt(iniPath, L"AutoHome", L"J2Deg", -30);
+	ImportProfileInt(iniPath, L"AutoHome", L"J3Deg", 60);
+	ImportProfileInt(iniPath, L"AutoHome", L"J4Deg", 30);
+	ImportProfileInt(iniPath, L"AutoHome", L"J5Deg", 0);
 
 	// ===== Kinematics =====
 	// Links (mm)
@@ -484,6 +543,11 @@ SettingsIo::Result SettingsIo::ImportFromIni(const std::wstring& iniPath)
 	ImportProfileInt(iniPath, L"Vision\\Detector", L"Conf_milli", 500);
 	ImportProfileInt(iniPath, L"Vision\\Detector", L"Nms_milli", 400);
 
+	ImportProfileString(iniPath, L"Vision\\Gemini", L"ApiKey", L"");
+	ImportProfileString(iniPath, L"Vision\\Gemini", L"Model", L"gemini-3-flash-preview");
+	ImportProfileInt(iniPath, L"Vision\\Gemini", L"IntervalMs", 2000);
+	ImportProfileString(iniPath, L"Vision\\Gemini", L"Proxy", L"");
+
 	ImportProfileString(iniPath, L"Vision\\Hand", L"PalmOnnxPath", L"");
 	ImportProfileString(iniPath, L"Vision\\Hand", L"LandmarkOnnxPath", L"");
 	ImportProfileInt(iniPath, L"Vision\\Hand", L"PinchThreshNorm_milli", 250);
@@ -552,6 +616,45 @@ SettingsIo::Result SettingsIo::ImportFromIni(const std::wstring& iniPath)
 	ImportProfileInt(iniPath, L"SeeAndFetch\\Place", L"J2DownStepDeg_milli", 2000);
 	ImportProfileInt(iniPath, L"SeeAndFetch\\Place", L"SignJ2Down", +1);
 	ImportProfileInt(iniPath, L"SeeAndFetch\\Place", L"MaxAttempts", 2);
+
+	// ===== GrabTest =====
+	ImportProfileInt(iniPath, L"GrabTest", L"Enabled", 0);
+	ImportProfileInt(iniPath, L"GrabTest", L"LostFramesToAbort", 10);
+	ImportProfileInt(iniPath, L"GrabTest", L"AcquireStableFrames", 5);
+	ImportProfileInt(iniPath, L"GrabTest\\Timing", L"MinCommandIntervalMs", 120);
+	ImportProfileInt(iniPath, L"GrabTest\\Timing", L"DefaultMoveTimeMs", 220);
+	ImportProfileInt(iniPath, L"GrabTest\\Timing", L"LockAfterMoveMs", 240);
+	ImportProfileInt(iniPath, L"GrabTest\\Find", L"DeadbandPx", 10);
+	ImportProfileInt(iniPath, L"GrabTest\\Find", L"CoarseCenterPx", 60);
+	ImportProfileInt(iniPath, L"GrabTest\\Find", L"StableCenterFrames", 3);
+	ImportProfileInt(iniPath, L"GrabTest\\Find", L"Yaw_kDegPerPx_milli", 30);
+	ImportProfileInt(iniPath, L"GrabTest\\Find", L"Yaw_MinStepDeg_milli", 600);
+	ImportProfileInt(iniPath, L"GrabTest\\Find", L"Yaw_MaxStepDeg_milli", 3500);
+	ImportProfileInt(iniPath, L"GrabTest\\Find", L"Pitch_kDegPerPx_milli", 30);
+	ImportProfileInt(iniPath, L"GrabTest\\Find", L"Pitch_MinStepDeg_milli", 600);
+	ImportProfileInt(iniPath, L"GrabTest\\Find", L"Pitch_MaxStepDeg_milli", 3500);
+	ImportProfileInt(iniPath, L"GrabTest\\Find", L"MaxPitchStepDeg_milli", 8000);
+	ImportProfileInt(iniPath, L"GrabTest\\Find", L"CenterOffsetU", 0);
+	ImportProfileInt(iniPath, L"GrabTest\\Find", L"CenterOffsetV", 0);
+	ImportProfileInt(iniPath, L"GrabTest\\Find", L"MinServoPosChange", 8);
+	ImportProfileInt(iniPath, L"GrabTest\\Find", L"SignJ1FromErrU", -1);
+	ImportProfileInt(iniPath, L"GrabTest\\Find", L"SignJ4FromErrV", -1);
+	ImportProfileInt(iniPath, L"GrabTest\\Find", L"J3_kDegPerPx_milli", 30);
+	ImportProfileInt(iniPath, L"GrabTest\\Find", L"J3_MinStepDeg_milli", 600);
+	ImportProfileInt(iniPath, L"GrabTest\\Find", L"J3_MaxStepDeg_milli", 3500);
+	ImportProfileInt(iniPath, L"GrabTest\\Find", L"SignJ3FromErrV", -1);
+	ImportProfileInt(iniPath, L"GrabTest\\Approach", L"TimeToFetchStableFrames", 2);
+	ImportProfileInt(iniPath, L"GrabTest\\Approach", L"MaxAdvanceSteps", 60);
+	ImportProfileInt(iniPath, L"GrabTest\\Approach", L"J2AdvanceStepDeg_milli", 2000);
+	ImportProfileInt(iniPath, L"GrabTest\\Approach", L"SignJ2Advance", -1);
+	ImportProfileInt(iniPath, L"GrabTest\\Gripper", L"JointIndex", 6);
+	ImportProfileInt(iniPath, L"GrabTest\\Gripper", L"OpenPos", 650);
+	ImportProfileInt(iniPath, L"GrabTest\\Gripper", L"ClosePos", 350);
+	ImportProfileInt(iniPath, L"GrabTest\\Gripper", L"CloseStepPos", 25);
+	ImportProfileInt(iniPath, L"GrabTest\\Gripper", L"CloseMoveTimeMs", 450);
+	ImportProfileInt(iniPath, L"GrabTest\\Gripper", L"MaxCloseSteps", 12);
+	ImportProfileInt(iniPath, L"GrabTest\\Return", L"ReturnToStartPose", 1);
+	ImportProfileInt(iniPath, L"GrabTest\\Return", L"ReturnTimeMs", 1200);
 	ImportProfileInt(iniPath, L"SeeAndFetch\\Place", L"RetryRetreatSteps", 8);
 	ImportProfileInt(iniPath, L"SeeAndFetch\\Place", L"RetreatSteps", 6);
 	ImportProfileInt(iniPath, L"SeeAndFetch\\Return", L"ReturnToStartPose", 1);

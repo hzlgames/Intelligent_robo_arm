@@ -102,12 +102,10 @@ void CMotionDiagPage::DoDataExchange(CDataExchange* pDX)
 	DDX_Control(pDX, IDC_MOTION_EDIT_MIN, m_editMin);
 	DDX_Control(pDX, IDC_MOTION_EDIT_MAX, m_editMax);
 	DDX_Control(pDX, IDC_MOTION_EDIT_HOME, m_editHome);
-	DDX_Control(pDX, IDC_MOTION_CHECK_INVERT, m_checkInvert);
 
 	DDX_Control(pDX, IDC_MOTION_EDIT_TARGET, m_editTarget);
 	DDX_Control(pDX, IDC_MOTION_EDIT_TIME, m_editTime);
 
-	DDX_Control(pDX, IDC_MOTION_CHECK_LOOP, m_checkLoop);
 	DDX_Control(pDX, IDC_MOTION_EDIT_LOG, m_editLog);
 }
 
@@ -124,9 +122,6 @@ BEGIN_MESSAGE_MAP(CMotionDiagPage, CPropertyPage)
 	ON_BN_CLICKED(IDC_MOTION_BTN_MOVE, &CMotionDiagPage::OnBnClickedMoveSelected)
 	ON_BN_CLICKED(IDC_MOTION_BTN_HOME, &CMotionDiagPage::OnBnClickedHome)
 	ON_BN_CLICKED(IDC_MOTION_BTN_READALL, &CMotionDiagPage::OnBnClickedReadAll)
-
-	ON_BN_CLICKED(IDC_MOTION_BTN_DEMO_PLAY, &CMotionDiagPage::OnBnClickedDemoPlay)
-	ON_BN_CLICKED(IDC_MOTION_BTN_STOP, &CMotionDiagPage::OnBnClickedStop)
 
 	ON_WM_TIMER()
 	ON_WM_DESTROY()
@@ -155,7 +150,6 @@ BOOL CMotionDiagPage::OnInitDialog()
 
 	SetIntToEdit(m_editTime, 800);
 	SetIntToEdit(m_editTarget, 500);
-	m_checkLoop.SetCheck(BST_UNCHECKED);
 
 	m_logToken = ArmCommsService::Instance().AddLogListener([this](const std::wstring& line) {
 		this->AppendLogLine(CString(line.c_str()));
@@ -199,7 +193,6 @@ void CMotionDiagPage::OnTimer(UINT_PTR nIDEvent)
 	if (nIDEvent == kTimerPoll)
 	{
 		ArmCommsService::Instance().Tick();
-		m_motion.Tick();
 	}
 	CPropertyPage::OnTimer(nIDEvent);
 }
@@ -276,7 +269,6 @@ void CMotionDiagPage::LoadSelectedJointToUi()
 	SetIntToEdit(m_editMin, jc.minPos);
 	SetIntToEdit(m_editMax, jc.maxPos);
 	SetIntToEdit(m_editHome, jc.homePos);
-	m_checkInvert.SetCheck(jc.invert ? BST_CHECKED : BST_UNCHECKED);
 }
 
 void CMotionDiagPage::SaveSelectedJointFromUi()
@@ -289,7 +281,6 @@ void CMotionDiagPage::SaveSelectedJointFromUi()
 	jc.minPos = GetIntFromEdit(m_editMin, 0);
 	jc.maxPos = GetIntFromEdit(m_editMax, 1000);
 	jc.homePos = GetIntFromEdit(m_editHome, 500);
-	jc.invert = (m_checkInvert.GetCheck() == BST_CHECKED);
 }
 
 void CMotionDiagPage::OnBnClickedRefreshCom()
@@ -373,13 +364,12 @@ void CMotionDiagPage::OnBnClickedImportLegacyLimits()
 void CMotionDiagPage::OnBnClickedMoveSelected()
 {
 	SaveSelectedJointFromUi();
-	const int sel = m_comboJoint.GetCurSel();
-	const int j = sel + 1;
+	const int servoId = GetIntFromEdit(m_editServoId, 0);
 	const int pos = GetIntFromEdit(m_editTarget, 500);
 	const int timeMs = GetIntFromEdit(m_editTime, 800);
-	if (!m_motion.MoveJointAbs(j, pos, timeMs))
+	if (!m_motion.MoveServoAbs(servoId, pos, timeMs))
 	{
-		AppendLogLine(L"[WARN] MoveSelected: No ServoId configured.");
+		AppendLogLine(L"[WARN] MoveSelected: invalid ServoId.");
 	}
 }
 
@@ -397,52 +387,4 @@ void CMotionDiagPage::OnBnClickedReadAll()
 {
 	SaveSelectedJointFromUi();
 	m_motion.RequestReadAllAssigned();
-}
-
-std::vector<MotionController::Keyframe> CMotionDiagPage::BuildDemoScript() const
-{
-	std::vector<MotionController::Keyframe> frames;
-	frames.reserve(5);
-
-	MotionController::Keyframe base;
-	for (int j = 0; j <= MotionConfig::kJointCount; j++)
-	{
-		base.jointPos[j] = -1;
-	}
-
-	const auto& cfg = m_motion.Config();
-	const int home2 = cfg.Get(2).homePos;
-	const int home3 = cfg.Get(3).homePos;
-	const int d = 60;
-
-	auto make = [&](int p2, int p3) {
-		MotionController::Keyframe k = base;
-		k.durationMs = GetIntFromEdit(m_editTime, 800);
-		k.jointPos[2] = p2;
-		k.jointPos[3] = p3;
-		return k;
-	};
-
-	frames.push_back(make(home2, home3));
-	frames.push_back(make(home2 + d, home3 - d));
-	frames.push_back(make(home2 - d, home3 + d));
-	frames.push_back(make(home2 + d, home3 - d));
-	frames.push_back(make(home2, home3));
-	return frames;
-}
-
-void CMotionDiagPage::OnBnClickedDemoPlay()
-{
-	SaveSelectedJointFromUi();
-	const bool loop = (m_checkLoop.GetCheck() == BST_CHECKED);
-	auto frames = BuildDemoScript();
-	m_motion.StartScript(std::move(frames), loop);
-	AppendLogLine(loop ? L"[INFO] Demo script started (loop)." : L"[INFO] Demo script started.");
-}
-
-void CMotionDiagPage::OnBnClickedStop()
-{
-	m_motion.StopScript();
-	ArmCommsService::Instance().EmergencyStop();
-	AppendLogLine(L"[INFO] Script stopped.");
 }

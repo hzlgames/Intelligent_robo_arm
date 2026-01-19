@@ -10,6 +10,7 @@
 // Kinematics diagnostics page:
 // - edit link lengths (L_base/L_arm1/L_arm2/L_wrist/L_cam)
 // - edit tool offsets (J5->Cam, Cam->Grip) in Cam coordinate
+// - edit joint mapping (Pos0/Pos+/Deg+/Zero)
 class CKinematicsDiagPage : public CPropertyPage
 {
 	DECLARE_DYNAMIC(CKinematicsDiagPage)
@@ -50,13 +51,11 @@ private:
 	CEdit m_editCamGripY;
 	CEdit m_editCamGripZ;
 
-	// 关节角度映射参数（J1..J5）
+	// Joint mapping controls (J1..J5)
 	bool m_bJointMapInited = false;
 	CEdit m_editJPos0[KinematicsConfig::kJointCount + 1]{};
 	CEdit m_editJPosPlus[KinematicsConfig::kJointCount + 1]{};
 	CEdit m_editJPlusDeg[KinematicsConfig::kJointCount + 1]{};
 	CEdit m_editJZeroOffMdeg[KinematicsConfig::kJointCount + 1]{};
-	CButton m_checkJPhysInv[KinematicsConfig::kJointCount + 1]{};
 };
-
 

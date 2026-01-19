@@ -41,6 +41,10 @@ private:
 	bool GetCheckFromId(int id) const;
 	void SetCheckToId(int id, bool on);
 
+	// 角度相关（毫度 <-> 度数转换）
+	void SetDegToEditId(int id, int milliDeg);
+	double GetDegFromEditId(int id, double fallback) const;
+
 	// 滚动相关
 	struct ChildInfo
 	{

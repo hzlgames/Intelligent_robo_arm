@@ -39,17 +39,17 @@ KinematicsConfig::KinematicsConfig()
 	// 默认值：来自 Reference/mechanics.md 的当前标定记录（后续你可随时改 ini 覆盖）。
 	//
 	// 关节线性标定表（两点）：
-	// J1: 0°=500, +45°=690
-	// J2: 0°=500, +45°=320  （注意方向相反，posPerDeg 为负）
-	// J3: 0°=500, +45°=680
-	// J4: 0°=500, +45°=700
-	// J5: 0°=500, +90°=900
-	m_joints[1] = JointCalib{ 500, 690, 45, 0.0, false };
-	// 你反馈 J2/J3 “物理角方向反了”，默认开启 physicalInvert 以匹配实际机械方向。
-	m_joints[2] = JointCalib{ 500, 320, 45, 0.0, false };
-	m_joints[3] = JointCalib{ 500, 680, 45, 0.0, false };
-	m_joints[4] = JointCalib{ 500, 700, 45, 0.0, false };
-	m_joints[5] = JointCalib{ 500, 900, 90, 0.0, false };
+	// - k = (posAtPlusDeg - posAt0Deg) / plusDeg，方向由 k 的符号决定
+	// - J1: 0°=500, +45°=690 => k > 0（正向）
+	// - J2: 0°=500, +45°=320 => k < 0（反向，角度增大时 pos 减小）
+	// - J3: 0°=500, +45°=680 => k > 0（正向）
+	// - J4: 0°=500, +45°=700 => k > 0（正向）
+	// - J5: 0°=500, +90°=900 => k > 0（正向）
+	m_joints[1] = JointCalib{ 500, 690, 45, 0.0 };
+	m_joints[2] = JointCalib{ 500, 320, 45, 0.0 };
+	m_joints[3] = JointCalib{ 500, 680, 45, 0.0 };
+	m_joints[4] = JointCalib{ 500, 700, 45, 0.0 };
+	m_joints[5] = JointCalib{ 500, 900, 90, 0.0 };
 }
 
 std::wstring KinematicsConfig::SectionLinks()
@@ -68,25 +68,6 @@ std::wstring KinematicsConfig::SectionForJoint(int nJoint)
 std::wstring KinematicsConfig::SectionSafety()
 {
 	return L"Kinematics\\Safety";
-}
-
-int KinematicsConfig::AxisSignForJoint(int nJoint)
-{
-	// 与 Reference/mechanics.md 的轴向说明保持一致：
-	// - J1 绕 Base.Z 正向 -> +1
-	// - J2 绕局部 X 正向 -> +1
-	// - J3 绕局部 X 反向 -> -1
-	// - J4 绕局部 X 正向 -> +1
-	// - J5 绕局部 Z 正向 -> +1
-	switch (nJoint)
-	{
-	case 1: return +1;
-	case 2: return +1;  // [FIX] 文档说 J2 绕 X 正向
-	case 3: return -1;  // [FIX] 文档说 J3 绕 X 反向
-	case 4: return +1;
-	case 5: return +1;
-	default: return +1;
-	}
 }
 
 void KinematicsConfig::LoadAll()
@@ -130,8 +111,6 @@ void KinematicsConfig::LoadAll()
 
 		// zeroOffsetDeg 以 milli-degree 存储
 		c.zeroOffsetDeg = ReadScaledDouble(sec, L"ZeroOffset_mdeg", c.zeroOffsetDeg, 1000);
-		// 物理角翻转（0/1）
-		c.physicalInvert = (AfxGetApp()->GetProfileInt(sec.c_str(), L"PhysicalInvert", c.physicalInvert ? 1 : 0) != 0);
 
 		m_joints[j] = c;
 	}
@@ -168,7 +147,6 @@ void KinematicsConfig::SaveAll() const
 		AfxGetApp()->WriteProfileInt(sec.c_str(), L"PosAtPlusDeg", c.posAtPlusDeg);
 		AfxGetApp()->WriteProfileInt(sec.c_str(), L"PlusDeg", c.plusDeg);
 		WriteScaledDouble(sec, L"ZeroOffset_mdeg", c.zeroOffsetDeg, 1000);
-		AfxGetApp()->WriteProfileInt(sec.c_str(), L"PhysicalInvert", c.physicalInvert ? 1 : 0);
 	}
 }
 

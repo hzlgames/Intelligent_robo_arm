@@ -14,6 +14,7 @@
 #define IDD_PAGE_KINEMATICS          109
 #define IDD_PAGE_KIN_TEST            110
 #define IDD_PAGE_SEEANDFETCH         111
+#define IDD_PAGE_AUTOHOME            112
 
 #define IDC_BTN_DIAGNOSTICS          1000
 #define IDC_BTN_EXPORT_PARAMS        1001
@@ -73,6 +74,12 @@
 #define IDC_STATIC_LAST_SEND_TIME    1303
 #define IDC_EDIT_THROTTLE_LOG        1304
 
+// Jog step settings (Control page)
+#define IDC_CTRL_EDIT_STEP_SPEED     1310
+#define IDC_CTRL_EDIT_STEP_TIME      1311
+#define IDC_CTRL_STATIC_STEP_MM      1312
+#define IDC_CTRL_BTN_STEP_SAVE       1313
+
 // Motion diagnostics page
 #define IDC_MOTION_COMBO_COMPORT     1400
 #define IDC_MOTION_BTN_REFRESH_COM   1401
@@ -96,9 +103,6 @@
 #define IDC_MOTION_BTN_HOME          1423
 #define IDC_MOTION_BTN_READALL       1424
 
-#define IDC_MOTION_CHECK_LOOP        1430
-#define IDC_MOTION_BTN_DEMO_PLAY     1431
-#define IDC_MOTION_BTN_STOP          1432
 
 #define IDC_MOTION_EDIT_LOG          1440
 
@@ -171,6 +175,7 @@
 #define IDC_SF_CHECK_PLANE_CACHE     1811
 #define IDC_SF_EDIT_LOST_FRAMES      1812
 #define IDC_SF_EDIT_ACQ_STABLE       1813
+#define IDC_SF_CHECK_GRAB_TEST       1814
 
 #define IDC_SF_EDIT_MIN_CMD_MS       1820
 #define IDC_SF_EDIT_DEF_MOVE_MS      1821
@@ -188,6 +193,8 @@
 #define IDC_SF_EDIT_SIGN_J1          1839
 #define IDC_SF_EDIT_SIGN_J4          1840
 #define IDC_SF_EDIT_SIGN_J3          1841
+#define IDC_SF_EDIT_CENTER_OFFSET_U  1842
+#define IDC_SF_EDIT_CENTER_OFFSET_V  1843
 
 #define IDC_SF_EDIT_GRASP_DEPTH      1850
 #define IDC_SF_EDIT_DEPTH_STABLE     1851
@@ -225,6 +232,12 @@
 #define IDC_SF_CHECK_RETURN_START    1871
 #define IDC_SF_EDIT_RETURN_MS        1872
 
+#define IDC_SF_EDIT_GEMINI_KEY       1915
+#define IDC_SF_EDIT_GEMINI_INTERVAL  1916
+#define IDC_SF_EDIT_GEMINI_PROXY     1917
+#define IDC_SF_LBL_GEMINI_STATUS     1918
+#define IDC_SF_LBL_GEMINI_RESPONSE   1919
+
 // Place (RedDotVisual)
 #define IDC_SF_RADIO_PLACE_SIMPLE    1890
 #define IDC_SF_RADIO_PLACE_REDDOT    1891
@@ -243,6 +256,22 @@
 #define IDC_SF_EDIT_PLACE_SIGN_J2DOWN 1904
 #define IDC_SF_EDIT_PLACE_MAX_ATTEMPTS 1905
 #define IDC_SF_EDIT_PLACE_RETRY_RETREAT 1906
+
+// See&Fetch: movement direction inversion (camera flipped etc.)
+#define IDC_SF_CHECK_INV_J1          1910
+#define IDC_SF_CHECK_INV_J4          1911
+#define IDC_SF_CHECK_INV_J3          1912
+#define IDC_SF_CHECK_INV_J2_ADV      1913
+#define IDC_SF_CHECK_INV_J2_DOWN     1914
+
+// AutoHome diagnostics page (连接后初始姿态配置)
+#define IDC_AUTOHOME_EDIT_J1         1920
+#define IDC_AUTOHOME_EDIT_J2         1921
+#define IDC_AUTOHOME_EDIT_J3         1922
+#define IDC_AUTOHOME_EDIT_J4         1923
+#define IDC_AUTOHOME_EDIT_J5         1924
+#define IDC_AUTOHOME_BTN_LOAD_DEFAULTS 1925
+#define IDC_AUTOHOME_BTN_SAVE        1926
 
 // =========================
 // 主界面：相机预览 + Jog 控制
@@ -312,6 +341,11 @@
 #define IDC_MAIN_BTN_SF_CANCEL       1553
 #define IDC_MAIN_BTN_SF_ESTOP        1554
 #define IDC_MAIN_STATIC_SF_STATUS    1555
+#define IDC_MAIN_CHECK_SF_GRABTEST   1556
+
+// 姿态可视化面板 (main dialog)
+#define IDC_MAIN_GROUP_POSTURE       1560
+#define IDC_MAIN_STATIC_POSTURE      1561
 
 // String resources
 #define IDS_DIAG_TITLE               2000
@@ -322,6 +356,7 @@
 #define IDS_TAB_KINEMATICS           2013
 #define IDS_TAB_KIN_TEST             2014
 #define IDS_TAB_SEEANDFETCH          2015
+#define IDS_TAB_AUTOHOME             2016
 #define IDS_STATUS_DISCONNECTED      2004
 #define IDS_STATUS_CONNECTED_SIM     2005
 #define IDS_STATUS_CONNECTED_REAL    2006
@@ -337,7 +372,7 @@
 #ifndef APSTUDIO_READONLY_SYMBOLS
 
 #define _APS_NEXT_RESOURCE_VALUE	129
-#define _APS_NEXT_CONTROL_VALUE		1551
+#define _APS_NEXT_CONTROL_VALUE		1920
 #define _APS_NEXT_SYMED_VALUE		101
 #define _APS_NEXT_COMMAND_VALUE		32771
 #endif

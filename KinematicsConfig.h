@@ -29,26 +29,29 @@ public:
 	struct JointCalib
 	{
 		// 两点标定：pos@0deg 与 pos@+deg，用于线性映射 angleDeg <-> pos
+		// 方向信息完全由这两个值决定：
+		// - k = (posAtPlusDeg - posAt0Deg) / plusDeg
+		// - 如果 k > 0，说明角度增大时 pos 增大（正向）
+		// - 如果 k < 0，说明角度增大时 pos 减小（反向）
+		// 这样不需要额外的 invert/sign 开关，方向由标定数据本身隐含。
 		int posAt0Deg = 500;
 		int posAtPlusDeg = 500;
 		int plusDeg = 45; // 例如 45/90
 
-		// 关节零位偏置（度）：用于修正“舵机0°”与“几何模型0°”的差异（装配/安装导致）
+		// 关节零位偏置（度）：用于修正"舵机0°"与"几何模型0°"的差异（装配/安装导致）
 		// 默认 0；未来可通过视觉/标定拟合得到。
 		double zeroOffsetDeg = 0.0;
-
-		// 物理角翻转：用于修正“诊断页/标定定义的物理角度方向”与实际机械方向相反的问题。
-		// - true：将物理角整体取反（physicalDeg = -physicalDeg）
-		// - 该开关会影响 ServoPos<->角度 的定义，因此在 KinTest 的 Physical 模式下会真正改变舵机目标pos。
-		bool physicalInvert = false;
 	};
 
 	// FPS/手动控制安全参数（用于约束 r/z/pitch 的积分范围）
 	struct SafetyParams
 	{
 		// 俯仰角限制（度）
-		int pitchMinDeg = -90;
-		int pitchMaxDeg = 90;
+		// 说明：早期为了避免在 ±90°附近“看起来敏感”，曾把范围收得很窄。
+		// 但实际物理使用中，末端确实可能需要“低于地平线”的姿态（> 90°）。
+		// 因此默认放宽到 ±170°；若你的机构确实无法达到，请在 ini/诊断界面里再收紧。
+		int pitchMinDeg = -170;
+		int pitchMaxDeg = 170;
 
 		// 最小高度（mm）
 		int zMinMm = 20;
@@ -72,14 +75,6 @@ public:
 
 	const SafetyParams& Safety() const { return m_safety; }
 	SafetyParams& Safety() { return m_safety; }
-
-	// 关节轴符号约定（与 mechanics.md 对齐）：
-	// - J1: 绕 Base.Z 正向 -> +1
-	// - J2: 绕局部 X 正向 -> +1
-	// - J3: 绕局部 X 反向 -> -1
-	// - J4: 绕局部 X 正向 -> +1
-	// - J5: 绕局部 Z 正向 -> +1
-	static int AxisSignForJoint(int nJoint);
 
 private:
 	static std::wstring SectionLinks();

@@ -203,6 +203,29 @@ void CSeeAndFetchDiagPage::SetCheckToId(int id, bool on)
 	CheckDlgButton(id, on ? BST_CHECKED : BST_UNCHECKED);
 }
 
+// 辅助函数：从 Profile 读取毫度值，转换为度数显示到界面
+void CSeeAndFetchDiagPage::SetDegToEditId(int id, int milliDeg)
+{
+	// 将毫度转换为度，支持小数点后3位
+	double deg = milliDeg / 1000.0;
+	CString txt;
+	txt.Format(L"%.3f", deg);
+	// 移除尾随的零
+	txt.TrimRight(L'0');
+	txt.TrimRight(L'.');
+	SetDlgItemTextW(id, txt);
+}
+
+// 辅助函数：从界面读取度数，转换为毫度保存到 Profile
+double CSeeAndFetchDiagPage::GetDegFromEditId(int id, double fallback) const
+{
+	CString txt;
+	GetDlgItemTextW(id, txt);
+	txt.Trim();
+	if (txt.IsEmpty()) return fallback;
+	return _wtof(txt.GetString());
+}
+
 void CSeeAndFetchDiagPage::LoadFromProfileToUi()
 {
 	CWinApp* app = AfxGetApp();
@@ -210,6 +233,7 @@ void CSeeAndFetchDiagPage::LoadFromProfileToUi()
 
 	// Global
 	SetCheckToId(IDC_SF_CHECK_PREFER_ARUCO, app->GetProfileInt(L"SeeAndFetch", L"PreferArucoDuringAuto", 1) ? true : false);
+	SetCheckToId(IDC_SF_CHECK_GRAB_TEST, app->GetProfileInt(L"GrabTest", L"Enabled", 0) ? true : false);
 	SetIntToEditId(IDC_SF_EDIT_LOST_FRAMES, app->GetProfileInt(L"SeeAndFetch", L"LostFramesToAbort", 10));
 	SetIntToEditId(IDC_SF_EDIT_ACQ_STABLE, app->GetProfileInt(L"SeeAndFetch", L"AcquireStableFrames", 5));
 	SetCheckToId(IDC_SF_CHECK_PLANE_CACHE, app->GetProfileInt(L"SeeAndFetch", L"EnablePlaneCache", 1) ? true : false);
@@ -222,16 +246,18 @@ void CSeeAndFetchDiagPage::LoadFromProfileToUi()
 	// Find
 	SetIntToEditId(IDC_SF_EDIT_FIND_DB, app->GetProfileInt(L"SeeAndFetch\\Find", L"DeadbandPx", 10));
 	SetIntToEditId(IDC_SF_EDIT_FIND_STABLE, app->GetProfileInt(L"SeeAndFetch\\Find", L"StableCenterFrames", 3));
-	SetIntToEditId(IDC_SF_EDIT_YAW_K_MILLI, app->GetProfileInt(L"SeeAndFetch\\Find", L"Yaw_kDegPerPx_milli", 30));
-	SetIntToEditId(IDC_SF_EDIT_YAW_MIN_MDEG, app->GetProfileInt(L"SeeAndFetch\\Find", L"Yaw_MinStepDeg_milli", 600));
-	SetIntToEditId(IDC_SF_EDIT_YAW_MAX_MDEG, app->GetProfileInt(L"SeeAndFetch\\Find", L"Yaw_MaxStepDeg_milli", 3500));
-	SetIntToEditId(IDC_SF_EDIT_PITCH_K_MILLI, app->GetProfileInt(L"SeeAndFetch\\Find", L"Pitch_kDegPerPx_milli", 30));
-	SetIntToEditId(IDC_SF_EDIT_PITCH_MIN_MDEG, app->GetProfileInt(L"SeeAndFetch\\Find", L"Pitch_MinStepDeg_milli", 600));
-	SetIntToEditId(IDC_SF_EDIT_PITCH_MAX_MDEG, app->GetProfileInt(L"SeeAndFetch\\Find", L"Pitch_MaxStepDeg_milli", 3500));
-	SetIntToEditId(IDC_SF_EDIT_J4PREF_MDEG, app->GetProfileInt(L"SeeAndFetch\\Find", L"J4PreferAbsDeg_milli", 35000));
-	SetIntToEditId(IDC_SF_EDIT_SIGN_J1, app->GetProfileInt(L"SeeAndFetch\\Find", L"SignJ1FromErrU", +1));
-	SetIntToEditId(IDC_SF_EDIT_SIGN_J4, app->GetProfileInt(L"SeeAndFetch\\Find", L"SignJ4FromErrV", +1));
-	SetIntToEditId(IDC_SF_EDIT_SIGN_J3, app->GetProfileInt(L"SeeAndFetch\\Find", L"SignJ3FromErrV", +1));
+	// 角度相关：界面显示度数，Profile存储毫度
+	SetDegToEditId(IDC_SF_EDIT_YAW_K_MILLI, app->GetProfileInt(L"SeeAndFetch\\Find", L"Yaw_kDegPerPx_milli", 30));
+	SetDegToEditId(IDC_SF_EDIT_YAW_MIN_MDEG, app->GetProfileInt(L"SeeAndFetch\\Find", L"Yaw_MinStepDeg_milli", 600));
+	SetDegToEditId(IDC_SF_EDIT_YAW_MAX_MDEG, app->GetProfileInt(L"SeeAndFetch\\Find", L"Yaw_MaxStepDeg_milli", 3500));
+	SetDegToEditId(IDC_SF_EDIT_PITCH_K_MILLI, app->GetProfileInt(L"SeeAndFetch\\Find", L"Pitch_kDegPerPx_milli", 30));
+	SetDegToEditId(IDC_SF_EDIT_PITCH_MIN_MDEG, app->GetProfileInt(L"SeeAndFetch\\Find", L"Pitch_MinStepDeg_milli", 600));
+	SetDegToEditId(IDC_SF_EDIT_PITCH_MAX_MDEG, app->GetProfileInt(L"SeeAndFetch\\Find", L"Pitch_MaxStepDeg_milli", 3500));
+	SetDegToEditId(IDC_SF_EDIT_J4PREF_MDEG, app->GetProfileInt(L"SeeAndFetch\\Find", L"J4PreferAbsDeg_milli", 35000));
+	// 注：方向由标定数据决定，不再需要单独的符号设置
+	// 中心偏移量（像素）
+	SetIntToEditId(IDC_SF_EDIT_CENTER_OFFSET_U, app->GetProfileInt(L"SeeAndFetch\\Find", L"CenterOffsetU", 0));
+	SetIntToEditId(IDC_SF_EDIT_CENTER_OFFSET_V, app->GetProfileInt(L"SeeAndFetch\\Find", L"CenterOffsetV", 0));
 
 	// Approach
 	{
@@ -245,8 +271,9 @@ void CSeeAndFetchDiagPage::LoadFromProfileToUi()
 	SetIntToEditId(IDC_SF_EDIT_DEPTH_STABLE, app->GetProfileInt(L"SeeAndFetch\\Approach", L"DepthStableFrames", 3));
 	SetIntToEditId(IDC_SF_EDIT_DEPTH_JUMP, app->GetProfileInt(L"SeeAndFetch\\Approach", L"DepthMaxJumpMm", 40));
 	SetIntToEditId(IDC_SF_EDIT_MAX_ADV_STEPS, app->GetProfileInt(L"SeeAndFetch\\Approach", L"MaxAdvanceSteps", 60));
-	SetIntToEditId(IDC_SF_EDIT_J2STEP_MDEG, app->GetProfileInt(L"SeeAndFetch\\Approach", L"J2AdvanceStepDeg_milli", 2000));
-	SetIntToEditId(IDC_SF_EDIT_SIGN_J2, app->GetProfileInt(L"SeeAndFetch\\Approach", L"SignJ2Advance", +1));
+	// 角度相关：界面显示度数
+	SetDegToEditId(IDC_SF_EDIT_J2STEP_MDEG, app->GetProfileInt(L"SeeAndFetch\\Approach", L"J2AdvanceStepDeg_milli", 2000));
+	// 注：方向由标定数据决定，不再需要单独的符号设置
 	SetCheckToId(IDC_SF_CHECK_J1_FINE, app->GetProfileInt(L"SeeAndFetch\\Approach", L"EnableJ1FineTune", 1) ? true : false);
 	SetIntToEditId(IDC_SF_EDIT_BOX_AREA, app->GetProfileInt(L"SeeAndFetch\\Approach", L"GraspBoxAreaPx2", 30000));
 	SetIntToEditId(IDC_SF_EDIT_BOX_SCALE, app->GetProfileInt(L"SeeAndFetch\\Approach", L"GraspBoxScale_milli", 0));
@@ -289,13 +316,19 @@ void CSeeAndFetchDiagPage::LoadFromProfileToUi()
 	SetIntToEditId(IDC_SF_EDIT_PLACE_BOX_STABLE, app->GetProfileInt(L"SeeAndFetch\\Place", L"BoxStableFrames", 3));
 	SetIntToEditId(IDC_SF_EDIT_PLACE_BOX_JUMP, app->GetProfileInt(L"SeeAndFetch\\Place", L"BoxAreaMaxJumpPx2", 20000));
 	SetIntToEditId(IDC_SF_EDIT_PLACE_MAX_DOWN, app->GetProfileInt(L"SeeAndFetch\\Place", L"MaxDownSteps", 30));
-	SetIntToEditId(IDC_SF_EDIT_PLACE_J2DOWN_MDEG, app->GetProfileInt(L"SeeAndFetch\\Place", L"J2DownStepDeg_milli", 2000));
-	SetIntToEditId(IDC_SF_EDIT_PLACE_SIGN_J2DOWN, app->GetProfileInt(L"SeeAndFetch\\Place", L"SignJ2Down", +1));
+	// 角度相关：界面显示度数
+	SetDegToEditId(IDC_SF_EDIT_PLACE_J2DOWN_MDEG, app->GetProfileInt(L"SeeAndFetch\\Place", L"J2DownStepDeg_milli", 2000));
+	// 注：方向由标定数据决定，不再需要单独的符号设置
 	SetIntToEditId(IDC_SF_EDIT_PLACE_MAX_ATTEMPTS, app->GetProfileInt(L"SeeAndFetch\\Place", L"MaxAttempts", 2));
 	SetIntToEditId(IDC_SF_EDIT_PLACE_RETRY_RETREAT, app->GetProfileInt(L"SeeAndFetch\\Place", L"RetryRetreatSteps", 8));
 	SetIntToEditId(IDC_SF_EDIT_RETREAT_STEPS, app->GetProfileInt(L"SeeAndFetch\\Place", L"RetreatSteps", 6));
 	SetCheckToId(IDC_SF_CHECK_RETURN_START, app->GetProfileInt(L"SeeAndFetch\\Return", L"ReturnToStartPose", 1) ? true : false);
 	SetIntToEditId(IDC_SF_EDIT_RETURN_MS, app->GetProfileInt(L"SeeAndFetch\\Return", L"ReturnTimeMs", 1200));
+
+	// Gemini
+	SetDlgItemTextW(IDC_SF_EDIT_GEMINI_KEY, app->GetProfileString(L"Vision\\Gemini", L"ApiKey", L""));
+	SetIntToEditId(IDC_SF_EDIT_GEMINI_INTERVAL, app->GetProfileInt(L"Vision\\Gemini", L"IntervalMs", 2000));
+	SetDlgItemTextW(IDC_SF_EDIT_GEMINI_PROXY, app->GetProfileString(L"Vision\\Gemini", L"Proxy", L"127.0.0.1:7890"));
 }
 
 bool CSeeAndFetchDiagPage::SaveFromUiToProfile(std::wstring& outWhy)
@@ -324,6 +357,7 @@ bool CSeeAndFetchDiagPage::SaveFromUiToProfile(std::wstring& outWhy)
 	if (!inRange(lost, 1, 200, L"LostFramesToAbort")) return false;
 	if (!inRange(acq, 1, 200, L"AcquireStableFrames")) return false;
 	app->WriteProfileInt(L"SeeAndFetch", L"PreferArucoDuringAuto", GetCheckFromId(IDC_SF_CHECK_PREFER_ARUCO) ? 1 : 0);
+	app->WriteProfileInt(L"GrabTest", L"Enabled", GetCheckFromId(IDC_SF_CHECK_GRAB_TEST) ? 1 : 0);
 	app->WriteProfileInt(L"SeeAndFetch", L"EnablePlaneCache", GetCheckFromId(IDC_SF_CHECK_PLANE_CACHE) ? 1 : 0);
 	app->WriteProfileInt(L"SeeAndFetch", L"LostFramesToAbort", lost);
 	app->WriteProfileInt(L"SeeAndFetch", L"AcquireStableFrames", acq);
@@ -345,27 +379,31 @@ bool CSeeAndFetchDiagPage::SaveFromUiToProfile(std::wstring& outWhy)
 	if (!inRange(db, 0, 500, L"Find.DeadbandPx")) return false;
 	if (!inRange(stableC, 1, 60, L"Find.StableCenterFrames")) return false;
 
-	const int yawK = GetIntFromEditId(IDC_SF_EDIT_YAW_K_MILLI, 30);
-	const int yawMin = GetIntFromEditId(IDC_SF_EDIT_YAW_MIN_MDEG, 600);
-	const int yawMax = GetIntFromEditId(IDC_SF_EDIT_YAW_MAX_MDEG, 3500);
-	const int pitK = GetIntFromEditId(IDC_SF_EDIT_PITCH_K_MILLI, 30);
-	const int pitMin = GetIntFromEditId(IDC_SF_EDIT_PITCH_MIN_MDEG, 600);
-	const int pitMax = GetIntFromEditId(IDC_SF_EDIT_PITCH_MAX_MDEG, 3500);
-	const int j4pref = GetIntFromEditId(IDC_SF_EDIT_J4PREF_MDEG, 35000);
-	if (!inRange(yawK, 0, 5000, L"Find.Yaw_kDegPerPx_milli")) return false;
-	if (!inRange(yawMin, 0, 90000, L"Find.Yaw_MinStepDeg_milli")) return false;
-	if (!inRange(yawMax, yawMin, 90000, L"Find.Yaw_MaxStepDeg_milli")) return false;
-	if (!inRange(pitK, 0, 5000, L"Find.Pitch_kDegPerPx_milli")) return false;
-	if (!inRange(pitMin, 0, 90000, L"Find.Pitch_MinStepDeg_milli")) return false;
-	if (!inRange(pitMax, pitMin, 90000, L"Find.Pitch_MaxStepDeg_milli")) return false;
-	if (!inRange(j4pref, 0, 90000, L"Find.J4PreferAbsDeg_milli")) return false;
-	const int sJ1 = GetIntFromEditId(IDC_SF_EDIT_SIGN_J1, +1);
-	const int sJ4 = GetIntFromEditId(IDC_SF_EDIT_SIGN_J4, +1);
-	const int sJ3 = GetIntFromEditId(IDC_SF_EDIT_SIGN_J3, +1);
-	if (!(sJ1 == 1 || sJ1 == -1)) { outWhy = L"SignJ1FromErrU 只能为 +1 或 -1。"; return false; }
-	if (!(sJ4 == 1 || sJ4 == -1)) { outWhy = L"SignJ4FromErrV 只能为 +1 或 -1。"; return false; }
-	if (!(sJ3 == 1 || sJ3 == -1)) { outWhy = L"SignJ3FromErrV 只能为 +1 或 -1。"; return false; }
-
+	// 角度相关：从界面读取度数，转换为毫度保存
+	const double yawK_deg = GetDegFromEditId(IDC_SF_EDIT_YAW_K_MILLI, 0.03);
+	const double yawMin_deg = GetDegFromEditId(IDC_SF_EDIT_YAW_MIN_MDEG, 0.6);
+	const double yawMax_deg = GetDegFromEditId(IDC_SF_EDIT_YAW_MAX_MDEG, 3.5);
+	const double pitK_deg = GetDegFromEditId(IDC_SF_EDIT_PITCH_K_MILLI, 0.03);
+	const double pitMin_deg = GetDegFromEditId(IDC_SF_EDIT_PITCH_MIN_MDEG, 0.6);
+	const double pitMax_deg = GetDegFromEditId(IDC_SF_EDIT_PITCH_MAX_MDEG, 3.5);
+	const double j4pref_deg = GetDegFromEditId(IDC_SF_EDIT_J4PREF_MDEG, 35.0);
+	
+	const int yawK = (int)(yawK_deg * 1000.0 + 0.5);
+	const int yawMin = (int)(yawMin_deg * 1000.0 + 0.5);
+	const int yawMax = (int)(yawMax_deg * 1000.0 + 0.5);
+	const int pitK = (int)(pitK_deg * 1000.0 + 0.5);
+	const int pitMin = (int)(pitMin_deg * 1000.0 + 0.5);
+	const int pitMax = (int)(pitMax_deg * 1000.0 + 0.5);
+	const int j4pref = (int)(j4pref_deg * 1000.0 + 0.5);
+	
+	if (!inRange(yawK, 0, 5000, L"Find.Yaw_kDegPerPx")) return false;
+	if (!inRange(yawMin, 0, 90000, L"Find.Yaw_MinStepDeg")) return false;
+	if (!inRange(yawMax, yawMin, 90000, L"Find.Yaw_MaxStepDeg")) return false;
+	if (!inRange(pitK, 0, 5000, L"Find.Pitch_kDegPerPx")) return false;
+	if (!inRange(pitMin, 0, 90000, L"Find.Pitch_MinStepDeg")) return false;
+	if (!inRange(pitMax, pitMin, 90000, L"Find.Pitch_MaxStepDeg")) return false;
+	if (!inRange(j4pref, 0, 90000, L"Find.J4PreferAbsDeg")) return false;
+	// 注：方向由标定数据决定，这里默认 J3 为 -1
 	app->WriteProfileInt(L"SeeAndFetch\\Find", L"DeadbandPx", db);
 	app->WriteProfileInt(L"SeeAndFetch\\Find", L"StableCenterFrames", stableC);
 	app->WriteProfileInt(L"SeeAndFetch\\Find", L"Yaw_kDegPerPx_milli", yawK);
@@ -375,9 +413,16 @@ bool CSeeAndFetchDiagPage::SaveFromUiToProfile(std::wstring& outWhy)
 	app->WriteProfileInt(L"SeeAndFetch\\Find", L"Pitch_MinStepDeg_milli", pitMin);
 	app->WriteProfileInt(L"SeeAndFetch\\Find", L"Pitch_MaxStepDeg_milli", pitMax);
 	app->WriteProfileInt(L"SeeAndFetch\\Find", L"J4PreferAbsDeg_milli", j4pref);
-	app->WriteProfileInt(L"SeeAndFetch\\Find", L"SignJ1FromErrU", sJ1);
-	app->WriteProfileInt(L"SeeAndFetch\\Find", L"SignJ4FromErrV", sJ4);
-	app->WriteProfileInt(L"SeeAndFetch\\Find", L"SignJ3FromErrV", sJ3);
+	app->WriteProfileInt(L"SeeAndFetch\\Find", L"SignJ1FromErrU", +1);
+	app->WriteProfileInt(L"SeeAndFetch\\Find", L"SignJ4FromErrV", -1);
+	app->WriteProfileInt(L"SeeAndFetch\\Find", L"SignJ3FromErrV", -1);
+	// 中心偏移量
+	const int centerOffU = GetIntFromEditId(IDC_SF_EDIT_CENTER_OFFSET_U, 0);
+	const int centerOffV = GetIntFromEditId(IDC_SF_EDIT_CENTER_OFFSET_V, 0);
+	if (!inRange(centerOffU, -500, 500, L"Find.CenterOffsetU")) return false;
+	if (!inRange(centerOffV, -500, 500, L"Find.CenterOffsetV")) return false;
+	app->WriteProfileInt(L"SeeAndFetch\\Find", L"CenterOffsetU", centerOffU);
+	app->WriteProfileInt(L"SeeAndFetch\\Find", L"CenterOffsetV", centerOffV);
 
 	// Approach
 	int rangeMode = 0;
@@ -387,8 +432,10 @@ bool CSeeAndFetchDiagPage::SaveFromUiToProfile(std::wstring& outWhy)
 	const int depStable = GetIntFromEditId(IDC_SF_EDIT_DEPTH_STABLE, 3);
 	const int depJump = GetIntFromEditId(IDC_SF_EDIT_DEPTH_JUMP, 40);
 	const int maxAdv = GetIntFromEditId(IDC_SF_EDIT_MAX_ADV_STEPS, 60);
-	const int j2Step = GetIntFromEditId(IDC_SF_EDIT_J2STEP_MDEG, 2000);
-	const int sJ2 = GetIntFromEditId(IDC_SF_EDIT_SIGN_J2, +1);
+	// 角度相关：从界面读取度数，转换为毫度
+	const double j2Step_deg = GetDegFromEditId(IDC_SF_EDIT_J2STEP_MDEG, 2.0);
+	const int j2Step = (int)(j2Step_deg * 1000.0 + 0.5);
+	// 注：方向由标定数据决定，符号固定为 +1
 	const int boxArea = GetIntFromEditId(IDC_SF_EDIT_BOX_AREA, 30000);
 	const int boxScale = GetIntFromEditId(IDC_SF_EDIT_BOX_SCALE, 0);
 	const int boxStable = GetIntFromEditId(IDC_SF_EDIT_BOX_STABLE, 3);
@@ -406,7 +453,7 @@ bool CSeeAndFetchDiagPage::SaveFromUiToProfile(std::wstring& outWhy)
 	if (!inRange(boxJump, 0, 5000000, L"Approach.BoxAreaMaxJumpPx2")) return false;
 	if (!inRange(maxAttempts, 1, 50, L"Approach.MaxAttempts")) return false;
 	if (!inRange(retryRetreat, 0, 200, L"Approach.RetryRetreatSteps")) return false;
-	if (!(sJ2 == 1 || sJ2 == -1)) { outWhy = L"SignJ2Advance 只能为 +1 或 -1。"; return false; }
+	// sJ2 forced by checkbox above
 	if (!inRange(rangeMode, 0, 2, L"Approach.RangeMode")) return false;
 	app->WriteProfileInt(L"SeeAndFetch\\Approach", L"RangeMode", rangeMode);
 	app->WriteProfileInt(L"SeeAndFetch\\Approach", L"GraspDepthMm", graspDepth);
@@ -416,7 +463,7 @@ bool CSeeAndFetchDiagPage::SaveFromUiToProfile(std::wstring& outWhy)
 	app->WriteProfileInt(L"SeeAndFetch\\Approach", L"MaxAttempts", maxAttempts);
 	app->WriteProfileInt(L"SeeAndFetch\\Approach", L"RetryRetreatSteps", retryRetreat);
 	app->WriteProfileInt(L"SeeAndFetch\\Approach", L"J2AdvanceStepDeg_milli", j2Step);
-	app->WriteProfileInt(L"SeeAndFetch\\Approach", L"SignJ2Advance", sJ2);
+	app->WriteProfileInt(L"SeeAndFetch\\Approach", L"SignJ2Advance", +1);
 	app->WriteProfileInt(L"SeeAndFetch\\Approach", L"EnableJ1FineTune", GetCheckFromId(IDC_SF_CHECK_J1_FINE) ? 1 : 0);
 	app->WriteProfileInt(L"SeeAndFetch\\Approach", L"GraspBoxAreaPx2", boxArea);
 	app->WriteProfileInt(L"SeeAndFetch\\Approach", L"GraspBoxScale_milli", boxScale);
@@ -472,8 +519,10 @@ bool CSeeAndFetchDiagPage::SaveFromUiToProfile(std::wstring& outWhy)
 	const int placeBoxStable = GetIntFromEditId(IDC_SF_EDIT_PLACE_BOX_STABLE, 3);
 	const int placeBoxJump = GetIntFromEditId(IDC_SF_EDIT_PLACE_BOX_JUMP, 20000);
 	const int placeMaxDown = GetIntFromEditId(IDC_SF_EDIT_PLACE_MAX_DOWN, 30);
-	const int placeJ2Down = GetIntFromEditId(IDC_SF_EDIT_PLACE_J2DOWN_MDEG, 2000);
-	const int placeSignJ2Down = GetIntFromEditId(IDC_SF_EDIT_PLACE_SIGN_J2DOWN, +1);
+	// 角度相关：从界面读取度数，转换为毫度
+	const double placeJ2Down_deg = GetDegFromEditId(IDC_SF_EDIT_PLACE_J2DOWN_MDEG, 2.0);
+	const int placeJ2Down = (int)(placeJ2Down_deg * 1000.0 + 0.5);
+	// 注：方向由标定数据决定，符号固定为 +1
 	const int placeMaxAttempts = GetIntFromEditId(IDC_SF_EDIT_PLACE_MAX_ATTEMPTS, 2);
 	const int placeRetryRetreat = GetIntFromEditId(IDC_SF_EDIT_PLACE_RETRY_RETREAT, 8);
 	const int retreatSteps = GetIntFromEditId(IDC_SF_EDIT_RETREAT_STEPS, 6);
@@ -488,8 +537,7 @@ bool CSeeAndFetchDiagPage::SaveFromUiToProfile(std::wstring& outWhy)
 	if (!inRange(placeBoxStable, 1, 120, L"Place.BoxStableFrames")) return false;
 	if (!inRange(placeBoxJump, 0, 5000000, L"Place.BoxAreaMaxJumpPx2")) return false;
 	if (!inRange(placeMaxDown, 1, 10000, L"Place.MaxDownSteps")) return false;
-	if (!inRange(placeJ2Down, 0, 90000, L"Place.J2DownStepDeg_milli")) return false;
-	if (!(placeSignJ2Down == 1 || placeSignJ2Down == -1)) { outWhy = L"Place.SignJ2Down 只能为 +1 或 -1。"; return false; }
+	if (!inRange(placeJ2Down, 0, 90000, L"Place.J2DownStepDeg")) return false;
 	if (!inRange(placeMaxAttempts, 1, 50, L"Place.MaxAttempts")) return false;
 	if (!inRange(placeRetryRetreat, 0, 200, L"Place.RetryRetreatSteps")) return false;
 	if (!inRange(retreatSteps, 0, 10000, L"Place.RetreatSteps")) return false;
@@ -505,12 +553,29 @@ bool CSeeAndFetchDiagPage::SaveFromUiToProfile(std::wstring& outWhy)
 	app->WriteProfileInt(L"SeeAndFetch\\Place", L"BoxAreaMaxJumpPx2", placeBoxJump);
 	app->WriteProfileInt(L"SeeAndFetch\\Place", L"MaxDownSteps", placeMaxDown);
 	app->WriteProfileInt(L"SeeAndFetch\\Place", L"J2DownStepDeg_milli", placeJ2Down);
-	app->WriteProfileInt(L"SeeAndFetch\\Place", L"SignJ2Down", placeSignJ2Down);
+	app->WriteProfileInt(L"SeeAndFetch\\Place", L"SignJ2Down", +1);
 	app->WriteProfileInt(L"SeeAndFetch\\Place", L"MaxAttempts", placeMaxAttempts);
 	app->WriteProfileInt(L"SeeAndFetch\\Place", L"RetryRetreatSteps", placeRetryRetreat);
 	app->WriteProfileInt(L"SeeAndFetch\\Place", L"RetreatSteps", retreatSteps);
 	app->WriteProfileInt(L"SeeAndFetch\\Return", L"ReturnToStartPose", GetCheckFromId(IDC_SF_CHECK_RETURN_START) ? 1 : 0);
 	app->WriteProfileInt(L"SeeAndFetch\\Return", L"ReturnTimeMs", retMs);
+
+	// Gemini
+	CString gKey, gProxy;
+	GetDlgItemTextW(IDC_SF_EDIT_GEMINI_KEY, gKey);
+	gKey.Trim();
+	GetDlgItemTextW(IDC_SF_EDIT_GEMINI_PROXY, gProxy);
+	gProxy.Trim();
+	const int gInterval = GetIntFromEditId(IDC_SF_EDIT_GEMINI_INTERVAL, 2000);
+	if (gKey.GetLength() > 512)
+	{
+		outWhy = L"Gemini.ApiKey 太长。";
+		return false;
+	}
+	if (!inRange(gInterval, 500, 60000, L"Gemini.IntervalMs")) return false;
+	app->WriteProfileString(L"Vision\\Gemini", L"ApiKey", gKey);
+	app->WriteProfileInt(L"Vision\\Gemini", L"IntervalMs", gInterval);
+	app->WriteProfileString(L"Vision\\Gemini", L"Proxy", gProxy);
 
 	return true;
 }

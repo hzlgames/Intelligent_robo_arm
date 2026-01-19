@@ -81,7 +81,7 @@ namespace VisionGeometry
 		const double v1y = v0.y * cp - v0.z * sp;
 		const double v1z = v0.y * sp + v0.z * cp;
 
-		// Step2: Rz(-yaw) about +Z_base（见 VisualServoController 注释）
+		// Step2: Rz(-yaw) about +Z_base（与视觉观测坐标约定一致）
 		const double cy = std::cos(yawRad);
 		const double sy = std::sin(yawRad);
 		outVBase.x = v1x * cy + v1y * sy;

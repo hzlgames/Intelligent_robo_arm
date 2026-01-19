@@ -41,49 +41,50 @@ double ArmKinematics::WrapToPi(double a)
 }
 
 bool ArmKinematics::ServoPosToJointRad(const KinematicsConfig& kc,
-                                       const MotionConfig* pMc,
+                                       const MotionConfig* /*pMc*/,
                                        int nJoint,
                                        int pos,
                                        double& outQRad)
 {
+	// 统一映射逻辑：方向由标定数据的 k = (posAtPlusDeg - posAt0Deg) / plusDeg 决定。
+	// k > 0: 角度增大时 pos 增大（正向）
+	// k < 0: 角度增大时 pos 减小（反向）
+	// 这样不需要额外的 invert/sign 开关。
 	if (nJoint < 1 || nJoint > kJointCount) return false;
 	const auto& c = kc.GetJoint(nJoint);
 	if (c.plusDeg == 0) return false;
 	const double posPerDeg = (static_cast<double>(c.posAtPlusDeg - c.posAt0Deg) / static_cast<double>(c.plusDeg));
 	if (std::fabs(posPerDeg) < kEps) return false;
 
-	// 由舵机位置反解“物理角度（度）”
-	double degPhysical = (static_cast<double>(pos - c.posAt0Deg) / posPerDeg);
-	if (c.physicalInvert) degPhysical = -degPhysical;
-	const double degZeroAdjusted = degPhysical - c.zeroOffsetDeg;
+	// 由舵机位置反解角度（度）：angleDeg = (pos - posAt0Deg) / posPerDeg
+	const double angleDeg = (static_cast<double>(pos - c.posAt0Deg) / posPerDeg);
+	// 应用零位偏置
+	const double degZeroAdjusted = angleDeg - c.zeroOffsetDeg;
 
-	// 轴向符号 +（可选）MotionConfig::invert 叠加修正
-	int sign = KinematicsConfig::AxisSignForJoint(nJoint);
-	if (pMc && pMc->Get(nJoint).invert) sign = -sign;
-
-	outQRad = DegToRad(degZeroAdjusted) * static_cast<double>(sign);
+	outQRad = DegToRad(degZeroAdjusted);
 	return true;
 }
 
 bool ArmKinematics::JointRadToServoPos(const KinematicsConfig& kc,
-                                       const MotionConfig* pMc,
+                                       const MotionConfig* /*pMc*/,
                                        int nJoint,
                                        double qRad,
                                        int& outPos)
 {
+	// 统一映射逻辑：方向由标定数据的 k = (posAtPlusDeg - posAt0Deg) / plusDeg 决定。
+	// pos = posAt0Deg + (angleDeg + zeroOffsetDeg) * posPerDeg
 	if (nJoint < 1 || nJoint > kJointCount) return false;
 	const auto& c = kc.GetJoint(nJoint);
 	if (c.plusDeg == 0) return false;
 	const double posPerDeg = (static_cast<double>(c.posAtPlusDeg - c.posAt0Deg) / static_cast<double>(c.plusDeg));
 	if (std::fabs(posPerDeg) < kEps) return false;
 
-	int sign = KinematicsConfig::AxisSignForJoint(nJoint);
-	if (pMc && pMc->Get(nJoint).invert) sign = -sign;
-	const double degZeroAdjusted = RadToDeg(qRad) / static_cast<double>(sign);
-	double degPhysical = degZeroAdjusted + c.zeroOffsetDeg;
-	if (c.physicalInvert) degPhysical = -degPhysical;
+	// 关节角（弧度）-> 角度
+	const double angleDeg = RadToDeg(qRad);
+	// 应用零位偏置（加回 zeroOffsetDeg）
+	const double degWithOffset = angleDeg + c.zeroOffsetDeg;
 
-	const double posF = static_cast<double>(c.posAt0Deg) + degPhysical * posPerDeg;
+	const double posF = static_cast<double>(c.posAt0Deg) + degWithOffset * posPerDeg;
 	int pos = static_cast<int>(std::lround(posF));
 
 	// 位置域做一个基础保护（最终仍由 MotionController 做 min/max 裁剪）
@@ -286,28 +287,107 @@ ArmKinematics::IkResult ArmKinematics::InverseKinematics(const KinematicsConfig&
 	};
 
 	r.candidates.clear();
-	// 5) 强制 Elbow-Up：
-	// 数学上两支解通常成对存在，但工程上我们强制使用“肘部更高”的那支，以避免瞬时构型切换。
+	// 5) 稳定择优策略（避免在两个解之间跳变）：
+	// - 首先生成两个候选解
+	// - 优先选择 withinLimits 的解
+	// - 在同等条件下，选择离当前姿态最近（cost 最小）的解
+	// - 如果 cost 相近（差异 < 阈值），则使用 Elbow-Up 作为决胜条件（保持构型稳定）
 	IkSolution candA = solveQ2Q4(q3a);
 	IkSolution candB = solveQ2Q4(q3b);
 
 	const double zElA = L.L_base + L.L_arm1 * std::sin(candA.q.q[2]); // elbow after J2
 	const double zElB = L.L_base + L.L_arm1 * std::sin(candB.q.q[2]);
 
-	const bool pickA = (zElA >= zElB);
-	const IkSolution elbowUp = pickA ? candA : candB;
+	// [硬约束] J3 只允许"正角度"（按"物理角度"定义：RadToDeg(q) + zeroOffsetDeg >= 0）
+	// 说明：J4 允许为负（用户需求），只限制 J3。
+	auto allowBySign = [&](const IkSolution& s) -> bool
+	{
+		// 允许极小负数（数值误差）
+		const double epsDeg = 1e-3;
+		const double j3PhysDeg = RadToDeg(s.q.q[3]) + kc.GetJoint(3).zeroOffsetDeg;
+		return (j3PhysDeg >= -epsDeg);  // 只限制 J3，J4 允许为负
+	};
 
-	r.candidates.reserve(1);
-	r.candidates.push_back(elbowUp);
+	// [稳定性约束] 防止"绕底座旋转"：当有当前姿态参考时，拒绝 J1 变化过大的解
+	// 说明：当 J2+J3 接近伸直极限时，IK 可能通过大幅改变 J1 来"满足"目标，导致末端绕底座旋转
+	auto allowByJ1Stability = [&](const IkSolution& s) -> bool
+	{
+		if (!pQCurrent) return true; // 无参考时不限制
+		const double dJ1 = std::fabs(WrapToPi(s.q.q[1] - pQCurrent->q[1]));
+		const double maxJ1ChangeDeg = 15.0; // 单步 J1 最大允许变化 15°
+		return dJ1 <= DegToRad(maxJ1ChangeDeg);
+	};
 
-	r.chosenIndex = 0;
-	r.chosenQ = elbowUp.q;
+	r.candidates.reserve(2);
+	if (allowBySign(candA) && allowByJ1Stability(candA)) r.candidates.push_back(candA);
+	if (allowBySign(candB) && allowByJ1Stability(candB)) r.candidates.push_back(candB);
+
+	if (r.candidates.empty())
+	{
+		r.ok = false;
+		r.reason = L"IK 无可用解（J3 需为正，或 J1 变化过大被拒绝）。";
+		return r;
+	}
+
+	// 择优逻辑：优先 withinLimits，次优 cost 最小，最后 Elbow-Up
+	int bestIdx = 0;
+	{
+		// 若只剩一个候选，直接选它
+		if (r.candidates.size() == 1)
+		{
+			bestIdx = 0;
+		}
+		else
+		{
+			// 此时 candidates 中一定是 {candA, candB} 的子集，且 size==2
+			const IkSolution& A = r.candidates[0];
+			const IkSolution& B = r.candidates[1];
+			const bool aInLimits = A.withinLimits;
+			const bool bInLimits = B.withinLimits;
+			const double costA = A.cost;
+			const double costB = B.cost;
+			const double costThreshold = 0.01; // cost 差异阈值（弧度平方），约 5.7°
+
+			if (aInLimits && !bInLimits)
+			{
+				bestIdx = 0;
+			}
+			else if (!aInLimits && bInLimits)
+			{
+				bestIdx = 1;
+			}
+			else
+			{
+				if (pQCurrent)
+				{
+					if (std::fabs(costA - costB) > costThreshold)
+					{
+						bestIdx = (costA <= costB) ? 0 : 1;
+					}
+					else
+					{
+						// cost 相近时，用 Elbow-Up 决胜（保持构型稳定）
+						// 注意：Elbow-Up 判断使用原 candA/candB 的肘部高度（不依赖过滤后的顺序）
+						bestIdx = (zElA >= zElB) ? 0 : 1;
+					}
+				}
+				else
+				{
+					bestIdx = (zElA >= zElB) ? 0 : 1;
+				}
+			}
+		}
+	}
+
+	const IkSolution& chosen = r.candidates[bestIdx];
+	r.chosenIndex = bestIdx;
+	r.chosenQ = chosen.q;
 	r.ok = true;
 
-	if (!elbowUp.withinLimits)
+	if (!chosen.withinLimits)
 	{
 		// 仍然返回 ok=true 方便上层展示，但给出原因（上层可选择拒绝发送）
-		r.reason = L"存在 Elbow-Up 可达解，但该解可能超出软限位范围。";
+		r.reason = L"存在可达解，但该解可能超出软限位范围。";
 	}
 	return r;
 }

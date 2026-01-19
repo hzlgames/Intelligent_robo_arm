@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <string>
 #include <vector>
 
 // OpenCV（用于在 RGB32 buffer 上叠加 HUD；若未安装 OpenCV，则自动退化为无HUD）
@@ -21,6 +22,17 @@
 #include "VisionOverlayService.h"
 
 const DWORD NUM_BACK_BUFFERS = 2;
+
+static std::string WStringToUtf8(const std::wstring& ws)
+{
+	if (ws.empty()) return std::string();
+	const int n = ::WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), (int)ws.size(), nullptr, 0, nullptr, nullptr);
+	if (n <= 0) return std::string();
+	std::string out;
+	out.resize((size_t)n);
+	::WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), (int)ws.size(), &out[0], n, nullptr, nullptr);
+	return out;
+}
 
 void TransformImage_RGB24(
     BYTE*       pDest,
@@ -476,7 +488,7 @@ HRESULT DrawDevice::DrawFrame(IMFMediaBuffer *pBuffer)
     // 重要：缓存“最新一帧 RGB32”供视觉线程读取（CPreview::CopyLastRgb）。
     // 之前的实现只在开启镜像/旋转时更新 m_lastRgb，导致默认 Rot=0 且未镜像时
     // VisionService 永远拿不到帧（CopyLastRgb 返回 false），从而看不到目标点/误差箭头。
-    // 这里先缓存“变换前”的原始帧；若后续应用了镜像/旋转，会在后面的变换分支里覆盖为“变换后”帧。
+    // 这里仅缓存“变换前”的原始帧，避免视觉坐标与显示坐标发生二次变换导致叠加错位。
     if (!m_lastRgb.empty())
     {
         const UINT w = m_width;
@@ -605,17 +617,6 @@ HRESULT DrawDevice::DrawFrame(IMFMediaBuffer *pBuffer)
             {
                 BYTE* row = (BYTE*)lrTx.pBits + static_cast<size_t>(y) * lrTx.Pitch;
                 memcpy(row, &dst[static_cast<size_t>(y) * w], static_cast<size_t>(w) * 4);
-            }
-
-            // Update last RGB copy (tight, RGB32)
-            if (!m_lastRgb.empty())
-            {
-                for (UINT y = 0; y < h; y++)
-                {
-                    memcpy(m_lastRgb.data() + (static_cast<size_t>(y) * w * 4),
-                        &dst[static_cast<size_t>(y) * w],
-                        static_cast<size_t>(w) * 4);
-                }
             }
 
             pSurf->UnlockRect();
@@ -1248,380 +1249,340 @@ void DrawDevice::DrawOverlays(IDirect3DSurface9* pBB)
         drawHLine(y2, colGrid, 0, true);
     }
 
-	// =========================================================
-	// Visual Servo：目标点 + 误差箭头（不依赖 OpenCV 的兜底绘制路径）
-	// =========================================================
-	// 只在 OpenCV 不可用时启用，避免与 OpenCV HUD 重复，也满足“OpenCV 生效就不需要自己画”的诉求。
-#if !(defined(SMARTARM_HAS_OPENCV) && SMARTARM_HAS_OPENCV)
-	{
-		const auto snap = KinematicsOverlayService::Instance().GetSnapshot();
-		if (snap.vsEnabled)
-		{
-			// 颜色：正在由视觉驱动则高亮绿色，否则灰色（仅提示已启用但未覆盖手动）
-			const DWORD colVs = snap.vsApplied ? toD3dColor(RGB(0, 255, 0)) : toD3dColor(RGB(200, 200, 200));
+    //==============================
+    // 视觉识别叠加（VisionOverlayService）
+    //==============================
+    const VisionOverlayService::Snapshot vs = VisionOverlayService::Instance().GetSnapshot();
 
-			const int cxp = w / 2;
-			const int cyp = h / 2;
+    // 计算“视觉结果坐标 -> 当前显示表面坐标”的映射（与旋转/镜像一致）
+    const VideoRotation rot = m_overlay.rotation;
+    const UINT rotW = (rot == VideoRotation::Rotate90 || rot == VideoRotation::Rotate270) ? h : w;
+    const UINT rotH = (rot == VideoRotation::Rotate90 || rot == VideoRotation::Rotate270) ? w : h;
+    const float scaleX = (rotW > 0) ? (float)w / (float)rotW : 1.0f;
+    const float scaleY = (rotH > 0) ? (float)h / (float)rotH : 1.0f;
+    const float scale = (scaleX < scaleY) ? scaleX : scaleY;
+    const int outW = (int)(rotW * scale + 0.5f);
+    const int outH = (int)(rotH * scale + 0.5f);
+    const int offX = ((int)w - outW) / 2;
+    const int offY = ((int)h - outH) / 2;
 
-			// 目标点 = 画面中心 + 像素误差（与 VisualServoController 约定一致）
-			int tx = cxp + (int)std::lround(snap.vsErrU);
-			int ty = cyp + (int)std::lround(snap.vsErrV);
+    auto clampInt = [](int v, int lo, int hi) -> int
+    {
+        if (v < lo) return lo;
+        if (v > hi) return hi;
+        return v;
+    };
 
-			// Clamp
-			if (tx < 0) tx = 0;
-			if (ty < 0) ty = 0;
-			if (tx >= w) tx = w - 1;
-			if (ty >= h) ty = h - 1;
+    auto mapPoint = [&](double sx, double sy, int& dx, int& dy) -> bool
+    {
+        int ix = (int)std::lround(sx);
+        int iy = (int)std::lround(sy);
+        ix = clampInt(ix, 0, (int)w - 1);
+        iy = clampInt(iy, 0, (int)h - 1);
 
-			// 画一条中心->目标的直线（Bresenham）
-			auto drawLine = [&](int x0, int y0, int x1, int y1, DWORD c, int thickness)
-			{
-				int dx = std::abs(x1 - x0);
-				int sx = (x0 < x1) ? 1 : -1;
-				int dy = -std::abs(y1 - y0);
-				int sy = (y0 < y1) ? 1 : -1;
-				int err = dx + dy;
+        int ox = 0, oy = 0;
+        switch (rot)
+        {
+        case VideoRotation::None:
+            ox = ix; oy = iy;
+            break;
+        case VideoRotation::Rotate180:
+            ox = (int)w - 1 - ix;
+            oy = (int)h - 1 - iy;
+            break;
+        case VideoRotation::Rotate90:
+            ox = (int)h - 1 - iy;
+            oy = ix;
+            break;
+        case VideoRotation::Rotate270:
+            ox = iy;
+            oy = (int)w - 1 - ix;
+            break;
+        default:
+            ox = ix; oy = iy;
+            break;
+        }
 
-				while (true)
-				{
-					for (int oy = -thickness; oy <= thickness; oy++)
-					{
-						for (int ox = -thickness; ox <= thickness; ox++)
-						{
-							setPixel(x0 + ox, y0 + oy, c);
-						}
-					}
-					if (x0 == x1 && y0 == y1) break;
-					const int e2 = 2 * err;
-					if (e2 >= dy) { err += dy; x0 += sx; }
-					if (e2 <= dx) { err += dx; y0 += sy; }
-				}
-			};
+        if (m_overlay.mirrorHorizontal)
+        {
+            ox = (int)rotW - 1 - ox;
+        }
 
-			// 画一个空心圆（简单采样）
-			auto drawCircle = [&](int x, int y, int r, DWORD c)
-			{
-				// 采样 0..360 度，每 5 度一个点，足够用于 HUD
-				for (int a = 0; a < 360; a += 5)
-				{
-					const double rad = (double)a * 3.14159265358979323846 / 180.0;
-					const int px = x + (int)std::lround((double)r * std::cos(rad));
-					const int py = y + (int)std::lround((double)r * std::sin(rad));
-					setPixel(px, py, c);
-				}
-			};
+        const int x = offX + (int)(ox * scale + 0.5f);
+        const int y = offY + (int)(oy * scale + 0.5f);
+        if ((unsigned)x >= (unsigned)w || (unsigned)y >= (unsigned)h)
+        {
+            return false;
+        }
+        dx = x; dy = y;
+        return true;
+    };
 
-			// 画箭头主体
-			drawLine(cxp, cyp, tx, ty, colVs, 1);
+    auto drawLine = [&](int x0, int y0, int x1, int y1, DWORD c)
+    {
+        int dx = std::abs(x1 - x0);
+        int dy = -std::abs(y1 - y0);
+        int sx = (x0 < x1) ? 1 : -1;
+        int sy = (y0 < y1) ? 1 : -1;
+        int err = dx + dy;
+        while (true)
+        {
+            setPixel(x0, y0, c);
+            if (x0 == x1 && y0 == y1) break;
+            const int e2 = err * 2;
+            if (e2 >= dy) { err += dy; x0 += sx; }
+            if (e2 <= dx) { err += dx; y0 += sy; }
+        }
+    };
 
-			// 画箭头头部（两条短线）
-			{
-				const double vx = (double)(tx - cxp);
-				const double vy = (double)(ty - cyp);
-				const double len = std::sqrt(vx * vx + vy * vy);
-				if (len > 1e-3)
-				{
-					const double ux = vx / len;
-					const double uy = vy / len;
-					// 头部长度与夹角（可调）
-					const double headLen = 16.0;
-					const double ca = std::cos(25.0 * 3.14159265358979323846 / 180.0);
-					const double sa = std::sin(25.0 * 3.14159265358979323846 / 180.0);
+    auto drawHLineSeg = [&](int y, int x0, int x1, DWORD c, int thickness, bool dotted)
+    {
+        if ((unsigned)y >= (unsigned)h) return;
+        if (x0 > x1) std::swap(x0, x1);
+        x0 = clampInt(x0, 0, (int)w - 1);
+        x1 = clampInt(x1, 0, (int)w - 1);
+        for (int t = -thickness; t <= thickness; t++)
+        {
+            const int yy = y + t;
+            if ((unsigned)yy >= (unsigned)h) continue;
+            for (int x = x0; x <= x1; x++)
+            {
+                if (dotted && ((x & 3) != 0)) continue;
+                setPixel(x, yy, c);
+            }
+        }
+    };
 
-					// 左右两翼：对单位向量做旋转
-					const double lx = ux * ca - uy * sa;
-					const double ly = ux * sa + uy * ca;
-					const double rx = ux * ca + uy * sa;
-					const double ry = -ux * sa + uy * ca;
+    auto drawVLineSeg = [&](int x, int y0, int y1, DWORD c, int thickness, bool dotted)
+    {
+        if ((unsigned)x >= (unsigned)w) return;
+        if (y0 > y1) std::swap(y0, y1);
+        y0 = clampInt(y0, 0, (int)h - 1);
+        y1 = clampInt(y1, 0, (int)h - 1);
+        for (int t = -thickness; t <= thickness; t++)
+        {
+            const int xx = x + t;
+            if ((unsigned)xx >= (unsigned)w) continue;
+            for (int y = y0; y <= y1; y++)
+            {
+                if (dotted && ((y & 3) != 0)) continue;
+                setPixel(xx, y, c);
+            }
+        }
+    };
 
-					const int xL = tx - (int)std::lround(lx * headLen);
-					const int yL = ty - (int)std::lround(ly * headLen);
-					const int xR = tx - (int)std::lround(rx * headLen);
-					const int yR = ty - (int)std::lround(ry * headLen);
+    auto drawRect = [&](int x, int y, int rw, int rh, DWORD c, int thickness, bool dotted)
+    {
+        if (rw <= 0 || rh <= 0) return;
+        drawHLineSeg(y, x, x + rw - 1, c, thickness, dotted);
+        drawHLineSeg(y + rh - 1, x, x + rw - 1, c, thickness, dotted);
+        drawVLineSeg(x, y, y + rh - 1, c, thickness, dotted);
+        drawVLineSeg(x + rw - 1, y, y + rh - 1, c, thickness, dotted);
+    };
 
-					drawLine(tx, ty, xL, yL, colVs, 1);
-					drawLine(tx, ty, xR, yR, colVs, 1);
-				}
-			}
+    auto drawMappedRect = [&](int x, int y, int rw, int rh, DWORD c)
+    {
+        if (rw <= 0 || rh <= 0) return;
+        int sx0 = clampInt(x, 0, (int)w - 1);
+        int sy0 = clampInt(y, 0, (int)h - 1);
+        int sx1 = clampInt(x + rw - 1, 0, (int)w - 1);
+        int sy1 = clampInt(y + rh - 1, 0, (int)h - 1);
 
-			// 画目标点圆圈
-			drawCircle(tx, ty, 6, colVs);
-			drawCircle(tx, ty, 7, colVs);
-		}
-	}
-#endif
+        int x0, y0, x1, y1, x2, y2, x3, y3;
+        if (!mapPoint(sx0, sy0, x0, y0)) return;
+        if (!mapPoint(sx1, sy0, x1, y1)) return;
+        if (!mapPoint(sx1, sy1, x2, y2)) return;
+        if (!mapPoint(sx0, sy1, x3, y3)) return;
 
+        const int minX = std::min(std::min(x0, x1), std::min(x2, x3));
+        const int minY = std::min(std::min(y0, y1), std::min(y2, y3));
+        const int maxX = std::max(std::max(x0, x1), std::max(x2, x3));
+        const int maxY = std::max(std::max(y0, y1), std::max(y2, y3));
+        drawRect(minX, minY, maxX - minX + 1, maxY - minY + 1, c, 0, false);
+    };
+
+    auto drawMappedPoint = [&](double sx, double sy, DWORD c)
+    {
+        int dx = 0, dy = 0;
+        if (!mapPoint(sx, sy, dx, dy)) return;
+        for (int yy = -1; yy <= 1; yy++)
+        {
+            for (int xx = -1; xx <= 1; xx++)
+            {
+                setPixel(dx + xx, dy + yy, c);
+            }
+        }
+    };
+    auto drawMappedLine = [&](double sx0, double sy0, double sx1, double sy1, DWORD c)
+    {
+        int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+        if (!mapPoint(sx0, sy0, x0, y0)) return;
+        if (!mapPoint(sx1, sy1, x1, y1)) return;
+        drawLine(x0, y0, x1, y1, c);
+    };
+
+    // 颜色配置（识别相关）
+    const DWORD colTarget = D3DCOLOR_XRGB(255, 80, 80);
+    const DWORD colTrack = D3DCOLOR_XRGB(255, 200, 0);
+    const DWORD colSelect = D3DCOLOR_XRGB(0, 200, 255);
+    const DWORD colLocked = D3DCOLOR_XRGB(0, 255, 0);
+    const DWORD colCancelled = D3DCOLOR_XRGB(255, 80, 80);
+    const DWORD colAruco = D3DCOLOR_XRGB(0, 128, 255);
+    const DWORD colHand = D3DCOLOR_XRGB(0, 255, 128);
+    const DWORD colHandTip = D3DCOLOR_XRGB(255, 255, 0);
+    const DWORD colHandDir = D3DCOLOR_XRGB(255, 200, 0);
+    const DWORD colBox = D3DCOLOR_XRGB(0, 255, 255);
+
+    // 目标点（u,v）
+    if (vs.hasTargetPx)
+    {
+        int tx = 0, ty = 0;
+        if (mapPoint(vs.u, vs.v, tx, ty))
+        {
+            // 小十字（不影响全局横竖线）
+            drawHLineSeg(ty, tx - 8, tx + 8, colTarget, 0, false);
+            drawVLineSeg(tx, ty - 8, ty + 8, colTarget, 0, false);
+        }
+    }
+
+    // 追踪框/选中框/检测框
+    if (vs.hasTrackBox)
+    {
+        drawMappedRect(vs.trackBox.x, vs.trackBox.y, vs.trackBox.w, vs.trackBox.h, colTrack);
+    }
+    if (vs.hasSelectBox)
+    {
+        DWORD c = colSelect;
+        if (vs.selectState == 2 || vs.selectState == 3) c = colLocked;
+        if (vs.selectState == 4) c = colCancelled;
+        drawMappedRect(vs.selectBox.x, vs.selectBox.y, vs.selectBox.w, vs.selectBox.h, c);
+    }
+    if (vs.hasBox)
+    {
+        drawMappedRect(vs.box.x, vs.box.y, vs.box.w, vs.box.h, colBox);
+    }
+
+    // ArUco 角点/外框
+    if (vs.hasArucoCorners)
+    {
+        int px[4] = { 0 }, py[4] = { 0 };
+        bool ok = true;
+        for (int i = 0; i < 4; i++)
+        {
+            if (!mapPoint(vs.arucoCorners[i].x, vs.arucoCorners[i].y, px[i], py[i]))
+            {
+                ok = false;
+                break;
+            }
+            drawMappedPoint(vs.arucoCorners[i].x, vs.arucoCorners[i].y, colAruco);
+        }
+        if (ok)
+        {
+            for (int i = 0; i < 4; i++)
+            {
+                const int j = (i + 1) & 3;
+                drawLine(px[i], py[i], px[j], py[j], colAruco);
+            }
+        }
+    }
+
+    // 手部关键点
+    if (vs.hasHandLandmarks)
+    {
+        // 线特征（骨架）
+        const int kPairs[][2] = {
+            {0,1},{1,2},{2,3},{3,4},
+            {0,5},{5,6},{6,7},{7,8},
+            {0,9},{9,10},{10,11},{11,12},
+            {0,13},{13,14},{14,15},{15,16},
+            {0,17},{17,18},{18,19},{19,20},
+            {5,9},{9,13},{13,17}
+        };
+        for (int i = 0; i < (int)(sizeof(kPairs) / sizeof(kPairs[0])); i++)
+        {
+            const int a = kPairs[i][0];
+            const int b = kPairs[i][1];
+            drawMappedLine(vs.handPts[a].x, vs.handPts[a].y, vs.handPts[b].x, vs.handPts[b].y, colHand);
+        }
+
+        for (int i = 0; i < 21; i++)
+        {
+            drawMappedPoint(vs.handPts[i].x, vs.handPts[i].y, colHand);
+        }
+
+        // 指尖点与指向（食指 MCP->TIP）
+        const int idxMcp = 5;
+        const int idxTip = 8;
+        drawMappedPoint(vs.handPts[idxTip].x, vs.handPts[idxTip].y, colHandTip);
+        {
+            const double dx = vs.handPts[idxTip].x - vs.handPts[idxMcp].x;
+            const double dy = vs.handPts[idxTip].y - vs.handPts[idxMcp].y;
+            const double n = std::sqrt(dx * dx + dy * dy);
+            if (n > 1e-6)
+            {
+                const double ux = dx / n;
+                const double uy = dy / n;
+                const double extendLen = 80.0;
+                const double ex = vs.handPts[idxTip].x + ux * extendLen;
+                const double ey = vs.handPts[idxTip].y + uy * extendLen;
+                drawMappedLine(vs.handPts[idxTip].x, vs.handPts[idxTip].y, ex, ey, colHandDir);
+            }
+            drawMappedLine(vs.handPts[idxMcp].x, vs.handPts[idxMcp].y, vs.handPts[idxTip].x, vs.handPts[idxTip].y, colHandDir);
+        }
+    }
+
+    //==============================
+    // 绘制状态文字（左下角）
+    //==============================
 #if defined(SMARTARM_HAS_OPENCV) && SMARTARM_HAS_OPENCV
-	// ==========================
-	// HUD 叠加（OpenCV）
-	// ==========================
-	// 注意：OpenCV 的 putText 默认不支持中文字体，这里使用英文/符号，避免乱码。
-	{
-		cv::Mat img(h, w, CV_8UC4, lr.pBits, (size_t)lr.Pitch);
-		const auto snap = KinematicsOverlayService::Instance().GetSnapshot();
+    if (!vs.note.empty())
+    {
+        // 将 wstring 转为 UTF-8 string
+        auto wstr2utf8 = [](const std::wstring& ws) -> std::string
+        {
+            if (ws.empty()) return std::string();
+            const int n = ::WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), (int)ws.size(), nullptr, 0, nullptr, nullptr);
+            if (n <= 0) return std::string();
+            std::string out;
+            out.resize((size_t)n);
+            ::WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), (int)ws.size(), &out[0], n, nullptr, nullptr);
+            return out;
+        };
 
-		// 左上角 HUD 文本
-		char buf1[256] = {};
-		sprintf_s(buf1, "Jog:%s  IK:%s", snap.jogActive ? "ON" : "OFF", snap.ikOk ? "OK" : "FAIL");
-		cv::putText(img, buf1, cv::Point(12, 24), cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 255, 255, 0), 2, cv::LINE_AA);
+        const std::string text = wstr2utf8(vs.note);
+        if (!text.empty())
+        {
+            // 包装 D3D 表面为 cv::Mat (注意：BGR32 格式)
+            cv::Mat surface((int)h, (int)w, CV_8UC4, lr.pBits, (size_t)lr.Pitch);
 
-		char buf2[256] = {};
-		sprintf_s(buf2, "X=%.0f  Y=%.0f  Z=%.0f  P=%.1f",
-		          snap.target.x_mm, snap.target.y_mm, snap.target.z_mm, snap.target.pitch_deg);
-		cv::putText(img, buf2, cv::Point(12, 48), cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(255, 255, 255, 0), 1, cv::LINE_AA);
+            // 计算文字位置（左下角，留出边距）
+            const int fontFace = cv::FONT_HERSHEY_SIMPLEX;
+            const double fontScale = 0.5;
+            const int thickness = 1;
+            int baseline = 0;
+            cv::Size textSize = cv::getTextSize(text, fontFace, fontScale, thickness, &baseline);
 
-		char buf3[256] = {};
-		sprintf_s(buf3, "TX:%u fps  last:%u ms", snap.sendFps, snap.sinceLastSendMs);
-		cv::putText(img, buf3, cv::Point(12, 72), cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(180, 255, 180, 0), 1, cv::LINE_AA);
+            const int margin = 10;
+            const int textX = margin;
+            const int textY = (int)h - margin;  // 左下角
 
-		// Jog 向量指示（从一个小原点画箭头）
-		const cv::Point o(30, 105);
-		const cv::Point e(o.x + (int)std::lround(snap.joyX * 25.0), o.y - (int)std::lround(snap.joyY * 25.0));
-		cv::circle(img, o, 3, cv::Scalar(200, 200, 200, 0), -1, cv::LINE_AA);
-		cv::arrowedLine(img, o, e, cv::Scalar(0, 180, 255, 0), 2, cv::LINE_AA);
+            // 绘制黑色背景（半透明效果需手动实现，这里简化为纯黑背景）
+            const int bgPadding = 5;
+            cv::rectangle(surface,
+                cv::Point(textX - bgPadding, textY - textSize.height - bgPadding),
+                cv::Point(textX + textSize.width + bgPadding, textY + baseline + bgPadding),
+                cv::Scalar(0, 0, 0, 255), cv::FILLED);
 
-		// Visual Servo：目标点 + 误差箭头（OpenCV 版本）
-		if (snap.vsEnabled)
-		{
-			const int cxp = w / 2;
-			const int cyp = h / 2;
-			const cv::Point c(cxp, cyp);
-			const cv::Point t(cxp + (int)std::lround(snap.vsErrU), cyp + (int)std::lround(snap.vsErrV));
-
-			// Clamp to frame
-			auto clampPt = [&](cv::Point p) -> cv::Point {
-				p.x = std::max(0, std::min(w - 1, p.x));
-				p.y = std::max(0, std::min(h - 1, p.y));
-				return p;
-			};
-			const cv::Point tc = clampPt(t);
-
-			const cv::Scalar col = snap.vsApplied ? cv::Scalar(0, 255, 0, 0) : cv::Scalar(200, 200, 200, 0);
-			cv::circle(img, tc, 5, col, 2, cv::LINE_AA);
-			cv::arrowedLine(img, c, tc, col, 2, cv::LINE_AA, 0, 0.15);
-
-			const char* modeStr = "Center";
-			if (snap.vsMode == 1) modeStr = "FollowRay";
-			else if (snap.vsMode == 2) modeStr = "Look&Move";
-
-			char bufVs[256] = {};
-			sprintf_s(bufVs, "VS:%s %s e(%.0f,%.0f) adv=%.2f",
-			          snap.vsActive ? "ON" : "IDLE",
-			          modeStr,
-			          snap.vsErrU, snap.vsErrV,
-			          snap.vsAdvance);
-			cv::putText(img, bufVs, cv::Point(12, 120), cv::FONT_HERSHEY_SIMPLEX, 0.55,
-			            snap.vsApplied ? cv::Scalar(0, 255, 0, 0) : cv::Scalar(200, 200, 200, 0),
-			            1, cv::LINE_AA);
-		}
-
-		// =========================================================
-		// Vision recognition overlay：Detector bbox / ArUco depth / Hand landmarks（后续扩展）
-		// =========================================================
-		{
-			const auto v = VisionOverlayService::Instance().GetSnapshot();
-			// 轻量时效保护：超过 800ms 的数据不画，避免“拖尾”
-			const ULONGLONG now = ::GetTickCount64();
-			if (v.tickMs != 0 && now >= v.tickMs && (now - v.tickMs) <= 800)
-			{
-				// ---------
-				// Generic target overlay (all modes)
-				// ---------
-				const char* modeStr = "Auto";
-				switch (v.mode)
-				{
-				case 0: modeStr = "Auto"; break;
-				case 1: modeStr = "Brightest"; break;
-				case 2: modeStr = "Aruco"; break;
-				case 3: modeStr = "Color"; break;
-				case 4: modeStr = "Detector"; break;
-				case 5: modeStr = "Sticker"; break;
-				case 6: modeStr = "HandLM"; break;
-				default: modeStr = "Auto"; break;
-				}
-
-				cv::Scalar colTarget(255, 255, 255, 0);
-				if (v.mode == 1) colTarget = cv::Scalar(0, 255, 255, 0);      // Brightest: yellow
-				else if (v.mode == 2) colTarget = cv::Scalar(255, 255, 0, 0); // Aruco: cyan-ish
-				else if (v.mode == 3) colTarget = cv::Scalar(0, 0, 255, 0);   // Color: red
-				else if (v.mode == 4) colTarget = cv::Scalar(0, 255, 255, 0); // Detector: yellow
-				else if (v.mode == 5) colTarget = cv::Scalar(255, 0, 255, 0); // Sticker: magenta
-				else if (v.mode == 6) colTarget = cv::Scalar(0, 255, 0, 0);   // HandLM: green
-
-				auto clampPt = [&](double x, double y) -> cv::Point
-				{
-					const int ix = std::max(0, std::min(w - 1, (int)std::lround(x)));
-					const int iy = std::max(0, std::min(h - 1, (int)std::lround(y)));
-					return cv::Point(ix, iy);
-				};
-
-				if (v.hasTargetPx)
-				{
-					const auto tp = clampPt(v.u, v.v);
-					// cross + ring
-					cv::drawMarker(img, tp, colTarget, cv::MARKER_CROSS, 16, 2, cv::LINE_AA);
-					cv::circle(img, tp, 8, colTarget, 2, cv::LINE_AA);
-
-					char tb[128] = {};
-					if (v.hasConfidence)
-						sprintf_s(tb, "%s u=%.0f v=%.0f c=%.2f", modeStr, v.u, v.v, v.confidence);
-					else
-						sprintf_s(tb, "%s u=%.0f v=%.0f", modeStr, v.u, v.v);
-					cv::putText(img, tb, cv::Point(std::max(0, tp.x + 10), std::max(0, tp.y + 18)),
-					            cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 0, 0, 0), 2, cv::LINE_AA);
-					cv::putText(img, tb, cv::Point(std::max(0, tp.x + 10), std::max(0, tp.y + 18)),
-					            cv::FONT_HERSHEY_SIMPLEX, 0.5, colTarget, 1, cv::LINE_AA);
-
-					// ray arrow (if available): from target along (rayX,rayY) direction
-					if (v.hasRay)
-					{
-						const double s = 120.0;
-						const auto endp = clampPt((double)tp.x + v.rayX * s, (double)tp.y + v.rayY * s);
-						cv::arrowedLine(img, tp, endp, colTarget, 2, cv::LINE_AA, 0, 0.15);
-					}
-				}
-
-				// ArUco corners quad
-				if (v.hasArucoCorners)
-				{
-					const cv::Scalar colAruco(255, 255, 0, 0);
-					for (int i = 0; i < 4; i++)
-					{
-						const auto a = clampPt(v.arucoCorners[i].x, v.arucoCorners[i].y);
-						const auto b = clampPt(v.arucoCorners[(i + 1) & 3].x, v.arucoCorners[(i + 1) & 3].y);
-						cv::line(img, a, b, colAruco, 2, cv::LINE_AA);
-					}
-				}
-
-				// Generic track box (non-detector modes)
-				if (v.hasTrackBox && !v.hasBox && v.trackBox.w > 0 && v.trackBox.h > 0)
-				{
-					const cv::Rect r(v.trackBox.x, v.trackBox.y, v.trackBox.w, v.trackBox.h);
-					cv::rectangle(img, r, colTarget, 2, cv::LINE_AA);
-				}
-
-				// PointPick selection box (color feedback)
-				if (v.hasSelectBox && v.selectBox.w > 0 && v.selectBox.h > 0)
-				{
-					cv::Scalar colSel(0, 255, 255, 0); // Searching: yellow
-					const char* st = "SEARCH";
-					if (v.selectState == 2) { colSel = cv::Scalar(0, 255, 0, 0); st = "LOCK"; }
-					else if (v.selectState == 3) { colSel = cv::Scalar(0, 0, 255, 0); st = "CONFIRM"; }
-					else if (v.selectState == 4) { colSel = cv::Scalar(255, 0, 0, 0); st = "CANCEL"; }
-
-					const cv::Rect r(v.selectBox.x, v.selectBox.y, v.selectBox.w, v.selectBox.h);
-					cv::rectangle(img, r, colSel, 3, cv::LINE_AA);
-					cv::putText(img, st, cv::Point(std::max(0, r.x), std::max(12, r.y - 6)),
-					            cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 0, 0, 0), 2, cv::LINE_AA);
-					cv::putText(img, st, cv::Point(std::max(0, r.x), std::max(12, r.y - 6)),
-					            cv::FONT_HERSHEY_SIMPLEX, 0.6, colSel, 1, cv::LINE_AA);
-				}
-
-				// Detector bbox
-				if (v.hasBox && v.box.w > 0 && v.box.h > 0)
-				{
-					const cv::Rect r(v.box.x, v.box.y, v.box.w, v.box.h);
-					const cv::Scalar col(0, 255, 255, 0);
-					cv::rectangle(img, r, col, 2, cv::LINE_AA);
-					cv::circle(img, cv::Point((int)std::lround(v.u), (int)std::lround(v.v)), 4, col, -1, cv::LINE_AA);
-
-					char b[128] = {};
-					if (v.hasConfidence)
-						sprintf_s(b, "Det id=%d conf=%.2f", v.classId, v.confidence);
-					else
-						sprintf_s(b, "Det id=%d", v.classId);
-					const int tx = std::max(0, r.x);
-					const int ty = std::max(0, r.y - 6);
-					cv::putText(img, b, cv::Point(tx, ty), cv::FONT_HERSHEY_SIMPLEX, 0.5, col, 1, cv::LINE_AA);
-				}
-
-				// ArUco depth (mm): show near the target point
-				if (v.hasDepthMm && v.hasTargetPx)
-				{
-					// 近/中/远分档
-					const double d = v.depthMm;
-					const int nearMm = std::max(1, v.depthNearMm);
-					const int farMm = std::max(nearMm + 1, v.depthFarMm);
-					const char* bin = "Mid";
-					cv::Scalar col(0, 255, 255, 0); // default: yellow
-					if (d < (double)nearMm)
-					{
-						bin = "Near";
-						col = cv::Scalar(0, 0, 255, 0); // red
-					}
-					else if (d > (double)farMm)
-					{
-						bin = "Far";
-						col = cv::Scalar(255, 200, 0, 0); // blue-ish
-					}
-
-					char b[128] = {};
-					sprintf_s(b, "Depth=%.0fmm %s", v.depthMm, bin);
-					const int tx = std::max(0, std::min(w - 1, (int)std::lround(v.u) + 8));
-					const int ty = std::max(0, std::min(h - 1, (int)std::lround(v.v) - 8));
-					cv::putText(img, b, cv::Point(tx, ty), cv::FONT_HERSHEY_SIMPLEX, 0.55, col, 1, cv::LINE_AA);
-				}
-
-				// Hand landmarks skeleton + gesture
-				if (v.hasHandLandmarks)
-				{
-					auto drawEdge = [&](int a, int b, const cv::Scalar& col)
-					{
-						const auto pa = clampPt(v.handPts[a].x, v.handPts[a].y);
-						const auto pb = clampPt(v.handPts[b].x, v.handPts[b].y);
-						cv::line(img, pa, pb, col, 2, cv::LINE_AA);
-					};
-
-					const cv::Scalar colEdge(0, 255, 0, 0);
-					const cv::Scalar colPt(0, 0, 255, 0);
-					// Thumb
-					drawEdge(0, 1, colEdge); drawEdge(1, 2, colEdge); drawEdge(2, 3, colEdge); drawEdge(3, 4, colEdge);
-					// Index
-					drawEdge(0, 5, colEdge); drawEdge(5, 6, colEdge); drawEdge(6, 7, colEdge); drawEdge(7, 8, colEdge);
-					// Middle
-					drawEdge(0, 9, colEdge); drawEdge(9, 10, colEdge); drawEdge(10, 11, colEdge); drawEdge(11, 12, colEdge);
-					// Ring
-					drawEdge(0, 13, colEdge); drawEdge(13, 14, colEdge); drawEdge(14, 15, colEdge); drawEdge(15, 16, colEdge);
-					// Pinky
-					drawEdge(0, 17, colEdge); drawEdge(17, 18, colEdge); drawEdge(18, 19, colEdge); drawEdge(19, 20, colEdge);
-					// Palm ring
-					drawEdge(5, 9, colEdge); drawEdge(9, 13, colEdge); drawEdge(13, 17, colEdge); drawEdge(17, 5, colEdge);
-
-					for (int i = 0; i < 21; i++)
-					{
-						const auto p = clampPt(v.handPts[i].x, v.handPts[i].y);
-						cv::circle(img, p, 2, colPt, -1, cv::LINE_AA);
-					}
-
-					const char* g = "Unknown";
-					switch (v.gesture)
-					{
-					case VisionOverlayService::Gesture::OpenPalm: g = "OpenPalm"; break;
-					case VisionOverlayService::Gesture::Fist: g = "Fist"; break;
-					case VisionOverlayService::Gesture::Point: g = "Point"; break;
-					case VisionOverlayService::Gesture::Pinch: g = "Pinch"; break;
-					default: g = "Unknown"; break;
-					}
-
-					char gb[128] = {};
-					sprintf_s(gb, "Gesture=%s pinch=%.2f", g, v.pinchStrength);
-					const auto p0 = clampPt(v.handPts[0].x, v.handPts[0].y);
-					cv::putText(img, gb, cv::Point(std::max(0, p0.x + 8), std::max(0, p0.y - 8)),
-					            cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(255, 255, 255, 0), 2, cv::LINE_AA);
-					cv::putText(img, gb, cv::Point(std::max(0, p0.x + 8), std::max(0, p0.y - 8)),
-					            cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(0, 0, 0, 0), 1, cv::LINE_AA);
-				}
-			}
-		}
-
-		// IK 失败原因（只显示短提示）
-		if (!snap.ikOk)
-		{
-			cv::putText(img, "IK FAIL", cv::Point(12, 96), cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 0, 255, 0), 2, cv::LINE_AA);
-		}
-	}
+            // 绘制白色文字（BGR 格式）
+            cv::putText(surface, text,
+                cv::Point(textX, textY),
+                fontFace, fontScale,
+                cv::Scalar(255, 255, 255, 255),  // 白色 (BGRA)
+                thickness, cv::LINE_AA);
+        }
+    }
 #endif
 
+    // 解锁 Direct3D 表面
     pBB->UnlockRect();
 }
-

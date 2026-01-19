@@ -17,6 +17,41 @@ namespace
 	constexpr UINT_PTR kTimerPoll = 1;
 	constexpr UINT kPollMs = 50;
 
+	// 用于广播配置变更通知
+	struct BroadcastCtx
+	{
+		UINT msg = 0;
+		WPARAM wParam = 0;
+		LPARAM lParam = 0;
+	};
+
+	BOOL CALLBACK EnumChildProcSerial(HWND hWnd, LPARAM lParam)
+	{
+		auto* ctx = reinterpret_cast<BroadcastCtx*>(lParam);
+		if (!ctx) return FALSE;
+		::PostMessageW(hWnd, ctx->msg, ctx->wParam, ctx->lParam);
+		::EnumChildWindows(hWnd, EnumChildProcSerial, lParam);
+		return TRUE;
+	}
+
+	BOOL CALLBACK EnumThreadProcSerial(HWND hWnd, LPARAM lParam)
+	{
+		auto* ctx = reinterpret_cast<BroadcastCtx*>(lParam);
+		if (!ctx) return FALSE;
+		::PostMessageW(hWnd, ctx->msg, ctx->wParam, ctx->lParam);
+		::EnumChildWindows(hWnd, EnumChildProcSerial, lParam);
+		return TRUE;
+	}
+
+	void BroadcastSettingsChanged()
+	{
+		BroadcastCtx ctx;
+		ctx.msg = WM_APP_SETTINGS_IMPORTED;
+		ctx.wParam = 0;
+		ctx.lParam = 0;
+		::EnumThreadWindows(::GetCurrentThreadId(), EnumThreadProcSerial, reinterpret_cast<LPARAM>(&ctx));
+	}
+
 	std::vector<CString> EnumerateComPortsFromRegistry()
 	{
 		std::vector<CString> out;
@@ -97,11 +132,6 @@ namespace
 CSerialDiagPage::CSerialDiagPage()
 	: CPropertyPage(IDD_PAGE_SERIAL, IDS_TAB_SERIAL)
 {
-	for (int i = 0; i <= 6; i++)
-	{
-		m_minPos[i] = 0;
-		m_maxPos[i] = 1000;
-	}
 }
 
 CSerialDiagPage::~CSerialDiagPage()
@@ -152,7 +182,7 @@ BOOL CSerialDiagPage::OnInitDialog()
 	RefreshComList();
 	UpdateStatusText();
 	LoadManualControlsFromProfile();
-	LoadServoLimitsFromProfile();
+	m_motionCfg.LoadAll();  // 统一限位从 MotionConfig 加载
 	// Subscribe to global comms logs
 	m_logToken = ArmCommsService::Instance().AddLogListener([this](const std::wstring& line) {
 		this->AppendLogLine(CString(line.c_str()));
@@ -183,7 +213,7 @@ LRESULT CSerialDiagPage::OnSettingsImported(WPARAM /*wParam*/, LPARAM /*lParam*/
 		return 0;
 	}
 	LoadManualControlsFromProfile();
-	LoadServoLimitsFromProfile();
+	m_motionCfg.LoadAll();  // 统一限位从 MotionConfig 加载
 	AppendLogLine(L"[INFO] Settings imported: Serial page reloaded.");
 	return 0;
 }
@@ -360,56 +390,10 @@ void CSerialDiagPage::SaveManualControlsToProfile()
 	AfxGetApp()->WriteProfileInt(L"ManualMove", L"Time", GetIntFromEdit(m_editMoveTime, 800));
 }
 
-void CSerialDiagPage::LoadServoLimitsFromProfile()
+int CSerialDiagPage::ApplySafeClamp(uint8_t servoId, int pos, bool* clamped)
 {
-	for (int id = 1; id <= 6; id++)
-	{
-		CString keyMin, keyMax;
-		keyMin.Format(L"Min%d", id);
-		keyMax.Format(L"Max%d", id);
-		m_minPos[id] = AfxGetApp()->GetProfileInt(L"ServoLimits", keyMin, 0);
-		m_maxPos[id] = AfxGetApp()->GetProfileInt(L"ServoLimits", keyMax, 1000);
-	}
-}
-
-void CSerialDiagPage::SaveServoLimitToProfile(uint8_t id, bool isMin, int v)
-{
-	if (id < 1 || id > 6) return;
-	CString key;
-	key.Format(isMin ? L"Min%d" : L"Max%d", (int)id);
-	AfxGetApp()->WriteProfileInt(L"ServoLimits", key, v);
-	if (isMin)
-	{
-		m_minPos[id] = v;
-	}
-	else
-	{
-		m_maxPos[id] = v;
-	}
-}
-
-int CSerialDiagPage::ApplySafeClamp(uint8_t id, int pos, bool* clamped)
-{
-	if (id < 1 || id > 6)
-	{
-		if (clamped) *clamped = false;
-		return pos;
-	}
-	int minV = m_minPos[id];
-	int maxV = m_maxPos[id];
-	if (minV > maxV) std::swap(minV, maxV);
-	if (pos < minV)
-	{
-		if (clamped) *clamped = true;
-		return minV;
-	}
-	if (pos > maxV)
-	{
-		if (clamped) *clamped = true;
-		return maxV;
-	}
-	if (clamped) *clamped = false;
-	return pos;
+	// 使用 MotionConfig 统一限位系统
+	return m_motionCfg.ClampByServoId(servoId, pos, clamped);
 }
 
 void CSerialDiagPage::OnBnClickedMoveMinus()
@@ -475,20 +459,40 @@ void CSerialDiagPage::OnBnClickedSetMin()
 {
 	const int id = GetIntFromEdit(m_editMoveId, 1);
 	const int pos = GetIntFromEdit(m_editMovePos, 0);
-	SaveServoLimitToProfile(static_cast<uint8_t>(id), true, pos);
-	CString msg;
-	msg.Format(L"[INFO] 舵机%d min=%d 已保存。", id, pos);
-	AppendLogLine(msg);
+	if (m_motionCfg.SetMinByServoId(id, pos))
+	{
+		CString msg;
+		const int joint = m_motionCfg.FindJointByServoId(id);
+		msg.Format(L"[INFO] 舵机%d (关节J%d) min=%d 已保存到 Motion\\J%d。", id, joint, pos, joint);
+		AppendLogLine(msg);
+		BroadcastSettingsChanged();  // 通知其他组件重新加载配置
+	}
+	else
+	{
+		CString msg;
+		msg.Format(L"[WARN] 舵机%d 未绑定到任何关节，请先在[运动标定]中设置 ServoId。", id);
+		AppendLogLine(msg);
+	}
 }
 
 void CSerialDiagPage::OnBnClickedSetMax()
 {
 	const int id = GetIntFromEdit(m_editMoveId, 1);
 	const int pos = GetIntFromEdit(m_editMovePos, 1000);
-	SaveServoLimitToProfile(static_cast<uint8_t>(id), false, pos);
-	CString msg;
-	msg.Format(L"[INFO] 舵机%d max=%d 已保存。", id, pos);
-	AppendLogLine(msg);
+	if (m_motionCfg.SetMaxByServoId(id, pos))
+	{
+		CString msg;
+		const int joint = m_motionCfg.FindJointByServoId(id);
+		msg.Format(L"[INFO] 舵机%d (关节J%d) max=%d 已保存到 Motion\\J%d。", id, joint, pos, joint);
+		AppendLogLine(msg);
+		BroadcastSettingsChanged();  // 通知其他组件重新加载配置
+	}
+	else
+	{
+		CString msg;
+		msg.Format(L"[WARN] 舵机%d 未绑定到任何关节，请先在[运动标定]中设置 ServoId。", id);
+		AppendLogLine(msg);
+	}
 }
 
 void CSerialDiagPage::OnBnClickedShowSettings()
@@ -505,8 +509,18 @@ void CSerialDiagPage::OnBnClickedShowSettings()
 
 	if (id >= 1 && id <= 6)
 	{
+		const int joint = m_motionCfg.FindJointByServoId(id);
+		int minV = 0, maxV = 1000;
+		m_motionCfg.GetLimitsByServoId(id, minV, maxV);
 		CString lim;
-		lim.Format(L"[SET] Servo%d limits: min=%d max=%d (profile: ServoLimits/Min%d,Max%d)", id, m_minPos[id], m_maxPos[id], id, id);
+		if (joint > 0)
+		{
+			lim.Format(L"[SET] Servo%d (J%d) limits: min=%d max=%d (统一存储: Motion\\J%d)", id, joint, minV, maxV, joint);
+		}
+		else
+		{
+			lim.Format(L"[SET] Servo%d limits: min=%d max=%d (未绑定关节，使用默认值)", id, minV, maxV);
+		}
 		AppendLogLine(lim);
 	}
 	else
@@ -533,7 +547,7 @@ void CSerialDiagPage::OnBnClickedClearSettings()
 	menu.AppendMenuW(MF_STRING, kCmdClearThisMax, L"清除 当前ID 的 Max（恢复 1000）");
 	menu.AppendMenuW(MF_STRING, kCmdClearThisBoth, L"清除 当前ID 的 Min+Max（恢复默认）");
 	menu.AppendMenuW(MF_SEPARATOR);
-	menu.AppendMenuW(MF_STRING, kCmdClearAllLimits, L"清除 全部舵机范围（1..6 恢复默认）");
+	menu.AppendMenuW(MF_STRING, kCmdClearAllLimits, L"清除 全部关节范围（J1..J6 恢复默认）");
 	menu.AppendMenuW(MF_SEPARATOR);
 	menu.AppendMenuW(MF_STRING, kCmdClearManualMove, L"清除 手动面板参数（恢复默认）");
 
@@ -549,25 +563,49 @@ void CSerialDiagPage::OnBnClickedClearSettings()
 	switch (cmd)
 	{
 	case kCmdClearThisMin:
-		SaveServoLimitToProfile(static_cast<uint8_t>(id), true, 0);
-		AppendLogLine(L"[INFO] 已清除当前ID的 Min（恢复为 0）。");
+		if (m_motionCfg.SetMinByServoId(id, 0))
+		{
+			AppendLogLine(L"[INFO] 已清除当前ID的 Min（恢复为 0）。");
+			BroadcastSettingsChanged();
+		}
+		else
+		{
+			AppendLogLine(L"[WARN] 当前舵机ID未绑定关节，无法清除。");
+		}
 		break;
 	case kCmdClearThisMax:
-		SaveServoLimitToProfile(static_cast<uint8_t>(id), false, 1000);
-		AppendLogLine(L"[INFO] 已清除当前ID的 Max（恢复为 1000）。");
+		if (m_motionCfg.SetMaxByServoId(id, 1000))
+		{
+			AppendLogLine(L"[INFO] 已清除当前ID的 Max（恢复为 1000）。");
+			BroadcastSettingsChanged();
+		}
+		else
+		{
+			AppendLogLine(L"[WARN] 当前舵机ID未绑定关节，无法清除。");
+		}
 		break;
 	case kCmdClearThisBoth:
-		SaveServoLimitToProfile(static_cast<uint8_t>(id), true, 0);
-		SaveServoLimitToProfile(static_cast<uint8_t>(id), false, 1000);
-		AppendLogLine(L"[INFO] 已清除当前ID的 Min/Max（恢复默认 0..1000）。");
+		if (m_motionCfg.SetLimitsByServoId(id, 0, 1000))
+		{
+			AppendLogLine(L"[INFO] 已清除当前ID的 Min/Max（恢复默认 0..1000）。");
+			BroadcastSettingsChanged();
+		}
+		else
+		{
+			AppendLogLine(L"[WARN] 当前舵机ID未绑定关节，无法清除。");
+		}
 		break;
 	case kCmdClearAllLimits:
-		for (int sid = 1; sid <= 6; sid++)
+		// 直接遍历所有关节（J1..J6），重置限位
+		for (int j = 1; j <= MotionConfig::kJointCount; j++)
 		{
-			SaveServoLimitToProfile(static_cast<uint8_t>(sid), true, 0);
-			SaveServoLimitToProfile(static_cast<uint8_t>(sid), false, 1000);
+			auto& jc = m_motionCfg.Get(j);
+			jc.minPos = 0;
+			jc.maxPos = 1000;
 		}
-		AppendLogLine(L"[INFO] 已清除全部舵机范围（1..6 恢复默认 0..1000）。");
+		m_motionCfg.SaveAll();
+		AppendLogLine(L"[INFO] 已清除全部关节范围（J1..J6 恢复默认 0..1000）。");
+		BroadcastSettingsChanged();
 		break;
 	case kCmdClearManualMove:
 		AfxGetApp()->WriteProfileInt(L"ManualMove", L"Id", 1);

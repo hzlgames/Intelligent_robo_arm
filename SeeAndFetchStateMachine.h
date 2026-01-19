@@ -11,7 +11,6 @@
 #include "KinematicsConfig.h"
 #include "ToolConfig.h"
 #include "ToolGeometry.h"
-#include "VisualServoController.h"
 #include "VisualServoTypes.h"
 
 // ============================
@@ -26,9 +25,11 @@ public:
 	{
 		Idle = 0,
 		// ===== 手势锁定阶段（参考 fake_motion_code.md）=====
-		SelectGoal,      // 跟随手指（居中），并用 PointPick(Detector候选) 确认抓取目标
-		SelectTerminal,  // 跟随手指（居中），并用 PointPick(红点候选) 确认放置终点
-		GoInitialPose,   // 回到 initial_pos（开始抓取前的位置）
+		SelectGoal,      // 跟随手掌，并用 PointPick(Gemini候选) 确认抓取目标
+		FindGoalObject,  // 让机械臂对准确认的物体（pickBox中心），居中后记录 initial_pos
+		SelectTerminal,  // 跟随手掌，指定确认终点
+		GoAutoHome,      // 回到连接时的初始位置（AutoHome），准备开始抓取
+		ReadyToGrasp,    // 抓取前就绪（等待用户确认进入抓取流程）
 		Acquire,
 		Track,
 		Approach,
@@ -46,6 +47,10 @@ public:
 		// =========================
 		// Global / bookkeeping
 		// =========================
+		// 抓取测试模式：跳过选目标/终点，仅执行抓取流程
+		// 主要用于参数调试（配合 Gemini 识别）
+		bool grabTestOnly = false;
+
 		// 丢失多少帧后认为目标丢失（Track/Approach 等状态会用到）
 		int lostFramesToAbort = 10;
 
@@ -89,23 +94,46 @@ public:
 			// 像素误差 -> 关节步长（度）
 			// stepDeg = clamp(kDegPerPx * abs(errPx), minStepDeg, maxStepDeg)
 			double yaw_kDegPerPx = 0.03;    // J1
-			double yaw_minStepDeg = 0.6;
+			double yaw_minStepDeg = 1.5;    // 增大：避免舵机对小变化不响应
 			double yaw_maxStepDeg = 3.5;
 
 			double pitch_kDegPerPx = 0.03;  // J3/J4
-			double pitch_minStepDeg = 0.6;
+			double pitch_minStepDeg = 1.5;  // 增大：避免舵机对小变化不响应
 			double pitch_maxStepDeg = 3.5;
 
 			// J4 负责竖直误差的“优先使用范围”（超出则改用 J3）
 			// 用 abs(q4Deg) 判断，避免 J4 过度弯折损坏
 			double j4PreferAbsDeg = 35.0;
 
+			// J3/J4 切换滞后（度）：只有当 |q4| 超过 j4PreferAbsDeg + hysteresis 时才切换到 J3，
+			// 或 |q4| 低于 j4PreferAbsDeg - hysteresis 时才切换回 J4。
+			// 这可以避免在边界附近频繁切换导致方向抖动。
+			double j4SwitchHysteresisDeg = 5.0;
+
 			// 方向开关：不同装配/相机朝向可能导致正负号相反
 			// - J1: errU>0（目标在右侧）时，希望 J1 增加还是减少
-			int signJ1FromErrU = +1;
+			int signJ1FromErrU = -1;
 			// - J4/J3: errV>0（目标在下方）时，希望关节增加还是减少
-			int signJ4FromErrV = +1;
-			int signJ3FromErrV = +1;
+			//   注意：目标在下方需要低头（减小 Pitch），且 J3/J4 增加角度均为抬头，
+			//   因此这里必须为 -1（负反馈）。
+			//   [修正] J3 实际运动方向相反，这里改为 +1
+			int signJ4FromErrV = -1;
+			int signJ3FromErrV = -1;
+
+			// 目标中心偏移量（像素）：调整机械臂对准的画面位置
+			// offsetU > 0 表示目标位置向右偏移（机械臂会向右多转一点）
+			// offsetV > 0 表示目标位置向下偏移（机械臂会向下多俯一点）
+			int centerOffsetU = 0;
+			int centerOffsetV = 0;
+
+			// 单步 pitch 变化最大限制（度）：防止因误差计算异常导致关节突然跳变到极限
+			// 设置为 0 或负数表示不限制
+			double maxPitchStepDeg = 8.0;
+
+			// 舵机位置最小变化阈值：计算出的新位置与当前位置差异小于此值时不发送命令
+			// 这避免发送舵机无法响应的小变化，减少通信卡顿和无效命令
+			// 设置为 0 表示不启用此检查
+			int minServoPosChange = 8;
 		};
 		Find find{};
 
@@ -298,6 +326,10 @@ public:
 		int pickBoxY = 0;
 		int pickBoxW = 0;
 		int pickBoxH = 0;
+
+		// HandLandmarks 手势（用于 Point 手势暂停追踪）
+		bool hasHandLandmarks = false;
+		int handGesture = 0; // VisionOverlayService::Gesture enum value
 	};
 
 	struct Output
@@ -318,6 +350,9 @@ public:
 		// 建议：自动流程期间应锁定手动输入
 		bool lockManualJog = false;
 
+		// Point 手势暂停追踪（需要上层清空队列/停止下发）
+		bool pauseTracking = false;
+
 		// 建议：自动流程期间应强制 Vision 切 ArUco（保证 depthMm）
 		bool requestVisionAruco = false;
 
@@ -329,6 +364,9 @@ public:
 		int requestPointPickTarget = -1;
 		// 请求重置 PointPick FSM（上层可通过 pointPickResetSeq++ 实现）
 		bool requestPointPickReset = false;
+
+		// 请求刷新 Gemini 识别（上层通过 geminiResetSeq++ 实现）
+		bool requestGeminiReset = false;
 
 		// 目标缓存（用于 HUD/日志证据链）
 		bool hasCachedPlanePoint = false;
@@ -343,11 +381,18 @@ public:
 	void SetParams(const Params& p) { m_params = p; }
 	Params GetParams() const { return m_params; }
 
-	// 设置“开始自动流程时”的关节位置快照（用于 ReturnHome）
+	// 设置"开始自动流程时"的关节位置快照（用于 ReturnHome）
 	void SetStartPose(const std::array<int, MotionConfig::kJointCount + 1>& startPos, bool valid)
 	{
 		m_startPosePos = startPos;
 		m_hasStartPosePos = valid;
+	}
+
+	// 设置 AutoHome 位置（连接后的初始姿态，用于 GoAutoHome）
+	void SetAutoHomePos(const std::array<int, MotionConfig::kJointCount + 1>& pos, bool valid)
+	{
+		m_autoHomePos = pos;
+		m_hasAutoHomePos = valid;
 	}
 
 	// 设置桌面平面（Base 坐标系）：n·X + d = 0
@@ -385,18 +430,38 @@ private:
 	bool m_hasStartPosePos = false;
 	std::array<int, MotionConfig::kJointCount + 1> m_startPosePos{};
 
-	// fake_motion_code.md: initial_pos / terminal_pos（由手势确认时记录）
+	// fake_motion_code.md: initial_pos / terminal_pos（由手势确认后对准目标时记录）
 	bool m_hasInitialPosePos = false;
-	std::array<int, MotionConfig::kJointCount + 1> m_initialPosePos{};
+	std::array<int, MotionConfig::kJointCount + 1> m_initialPosePos{};  // 对准物体后的位置
 	bool m_hasTerminalPosePos = false;
-	std::array<int, MotionConfig::kJointCount + 1> m_terminalPosePos{};
+	std::array<int, MotionConfig::kJointCount + 1> m_terminalPosePos{}; // 对准红点后的位置
 
-	// GoInitialPose / GoTerminalPose pacing
+	// AutoHome 位置（连接时的初始姿态）- 由外部在启动 SeeAndFetch 前设置
+	bool m_hasAutoHomePos = false;
+	std::array<int, MotionConfig::kJointCount + 1> m_autoHomePos{};
+
+	// FindGoalObject: 确认的物体框中心（像素）
+	bool m_hasConfirmedGoalPx = false;
+	double m_confirmedGoalU = 0.0;
+	double m_confirmedGoalV = 0.0;
+
+	// SelectGoal: 锁定后夹爪提示（张合一次）
+	int m_lockCuePhase = 0; // 0=idle,1=moved-away,2=done
+	int m_lockCueBasePos = -1;
+	int m_lockCueTargetPos = -1;
+	// SelectGoal: Pinch 确认后的“开爪到边界”提示
+	int m_confirmOpenPhase = 0; // 0=idle,1=opening,2=done
+
+	// GoAutoHome / GoTerminalPose pacing
 	int m_goPosePhase = 0; // 0=not sent, 1=sent(wait)
 
 	// pacing
 	ULONGLONG m_lockedUntilMs = 0;
 	ULONGLONG m_lastCmdMs = 0;
+	
+	// Point 手势粘滞暂停：检测到 Point 后保持暂停一段时间，避免识别间隙导致抖动
+	ULONGLONG m_pauseUntilMs = 0;
+	bool m_pauseWasActive = false;
 	int m_centerStableFrames = 0;
 	int m_depthStableFrames = 0;
 	bool m_hasLastDepthMm = false;

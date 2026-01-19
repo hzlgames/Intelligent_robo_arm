@@ -225,22 +225,20 @@
     <ClInclude Include="ArmCommsService.h" />
     <ClInclude Include="ArmProtocol.h" />
     <ClInclude Include="ArmKinematics.h" />
+    <ClInclude Include="ArmPostureCtrl.h" />
     <ClInclude Include="ArmStateEstimator.h" />
     <ClInclude Include="KinematicsDiagPage.h" />
-    <ClInclude Include="KinTestDiagPage.h" />
     <ClInclude Include="ToolConfig.h" />
     <ClInclude Include="ToolGeometry.h" />
     <ClInclude Include="SeeAndFetchStateMachine.h" />
     <ClInclude Include="SeeAndFetchJointPolicy.h" />
     <ClInclude Include="SeeAndFetchDiagPage.h" />
+    <ClInclude Include="AutoHomeDiagPage.h" />
     <ClInclude Include="BufferLock.h" />
     <ClInclude Include="CameraDiagPage.h" />
-    <ClInclude Include="ControlDiagPage.h" />
     <ClInclude Include="device.h" />
     <ClInclude Include="DiagnosticsSheet.h" />
     <ClInclude Include="FakeSerialPort.h" />
-    <ClInclude Include="JogController.h" />
-    <ClInclude Include="JogPadCtrl.h" />
     <ClInclude Include="KinematicsOverlayService.h" />
     <ClInclude Include="KinematicsConfig.h" />
     <ClInclude Include="MFCaptureD3D.h" />
@@ -254,35 +252,33 @@
     <ClInclude Include="SerialPortWin32.h" />
     <ClInclude Include="SettingsIo.h" />
     <ClInclude Include="targetver.h" />
-    <ClInclude Include="VisualServoController.h" />
     <ClInclude Include="VisualServoTypes.h" />
     <ClInclude Include="VisionDetector.h" />
     <ClInclude Include="VisionGeometry.h" />
     <ClInclude Include="VisionHandLandmarks.h" />
     <ClInclude Include="VisionOverlayService.h" />
     <ClInclude Include="VisionService.h" />
+    <ClInclude Include="GrabTestController.h" />
     <ClInclude Include="智能机械臂.h" />
     <ClInclude Include="智能机械臂Dlg.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="ArmPostureCtrl.cpp" />
     <ClCompile Include="ArmCommsService.cpp" />
     <ClCompile Include="ArmKinematics.cpp" />
     <ClCompile Include="ArmProtocol.cpp" />
     <ClCompile Include="ArmStateEstimator.cpp" />
     <ClCompile Include="KinematicsDiagPage.cpp" />
-    <ClCompile Include="KinTestDiagPage.cpp" />
     <ClCompile Include="ToolConfig.cpp" />
     <ClCompile Include="ToolGeometry.cpp" />
     <ClCompile Include="SeeAndFetchStateMachine.cpp" />
     <ClCompile Include="SeeAndFetchJointPolicy.cpp" />
     <ClCompile Include="SeeAndFetchDiagPage.cpp" />
+    <ClCompile Include="AutoHomeDiagPage.cpp" />
     <ClCompile Include="CameraDiagPage.cpp" />
-    <ClCompile Include="ControlDiagPage.cpp" />
     <ClCompile Include="device.cpp" />
     <ClCompile Include="DiagnosticsSheet.cpp" />
     <ClCompile Include="FakeSerialPort.cpp" />
-    <ClCompile Include="JogController.cpp" />
-    <ClCompile Include="JogPadCtrl.cpp" />
     <ClCompile Include="KinematicsOverlayService.cpp" />
     <ClCompile Include="KinematicsConfig.cpp" />
     <ClCompile Include="MotionConfig.cpp" />
@@ -292,12 +288,12 @@
     <ClCompile Include="SerialDiagPage.cpp" />
     <ClCompile Include="SerialPortWin32.cpp" />
     <ClCompile Include="SettingsIo.cpp" />
-    <ClCompile Include="VisualServoController.cpp" />
     <ClCompile Include="VisionDetector.cpp" />
     <ClCompile Include="VisionGeometry.cpp" />
     <ClCompile Include="VisionHandLandmarks.cpp" />
     <ClCompile Include="VisionOverlayService.cpp" />
     <ClCompile Include="VisionService.cpp" />
+    <ClCompile Include="GrabTestController.cpp" />
     <ClCompile Include="pch.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Create</PrecompiledHeader>

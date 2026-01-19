@@ -3,14 +3,22 @@
 #include "VisionService.h"
 
 #include "preview.h"
-#include "VisualServoController.h"
 
 #include "VisionDetector.h"
 #include "VisionGeometry.h"
 #include "VisionOverlayService.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cwctype>
+#include <string>
+#include <vector>
+
+#include <winhttp.h>
+#pragma comment(lib, "winhttp.lib")
 
 // Optional OpenCV support (vcpkg opencv4 provides core/imgproc; aruco depends on contrib build).
 #if defined(__has_include)
@@ -18,6 +26,9 @@
 #define SMARTARM_HAS_OPENCV 1
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
+#if __has_include(<opencv2/imgcodecs.hpp>)
+#include <opencv2/imgcodecs.hpp>
+#endif
 #endif
 #if defined(SMARTARM_HAS_OPENCV) && SMARTARM_HAS_OPENCV && __has_include(<opencv2/calib3d.hpp>)
 #define SMARTARM_HAS_OPENCV_CALIB3D 1
@@ -41,6 +52,397 @@ namespace
 	inline double Lerp(double a, double b, double t)
 	{
 		return a + (b - a) * t;
+	}
+
+	static std::wstring TrimW(const std::wstring& s)
+	{
+		size_t start = 0;
+		while (start < s.size() && std::iswspace(s[start])) start++;
+		size_t end = s.size();
+		while (end > start && std::iswspace(s[end - 1])) end--;
+		return s.substr(start, end - start);
+	}
+
+	static std::string WStringToUtf8(const std::wstring& ws)
+	{
+		if (ws.empty()) return std::string();
+		const int n = ::WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), (int)ws.size(), nullptr, 0, nullptr, nullptr);
+		if (n <= 0) return std::string();
+		std::string out;
+		out.resize((size_t)n);
+		::WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), (int)ws.size(), &out[0], n, nullptr, nullptr);
+		return out;
+	}
+
+	static std::string TrimStr(const std::string& s)
+	{
+		size_t b = 0;
+		while (b < s.size() && std::isspace((unsigned char)s[b])) b++;
+		size_t e = s.size();
+		while (e > b && std::isspace((unsigned char)s[e - 1])) e--;
+		return s.substr(b, e - b);
+	}
+
+	static std::string StripMarkdownFence(const std::string& s)
+	{
+		std::string t = TrimStr(s);
+		if (t.rfind("```", 0) == 0)
+		{
+			const size_t nl = t.find('\n');
+			if (nl != std::string::npos) t = t.substr(nl + 1);
+			t = TrimStr(t);
+			if (t.size() >= 3 && t.compare(t.size() - 3, 3, "```") == 0)
+			{
+				t = t.substr(0, t.size() - 3);
+			}
+			t = TrimStr(t);
+		}
+		return t;
+	}
+
+	static bool ExtractFirstTextFromResponse(const std::string& resp, std::string& outText)
+	{
+		outText.clear();
+		size_t pos = resp.find("\"text\"");
+		if (pos == std::string::npos) return false;
+		size_t colon = resp.find(':', pos);
+		if (colon == std::string::npos) return false;
+		size_t q = resp.find('"', colon);
+		if (q == std::string::npos) return false;
+		q++; // after opening quote
+		std::string out;
+		out.reserve(256);
+		bool esc = false;
+		for (size_t i = q; i < resp.size(); ++i)
+		{
+			char c = resp[i];
+			if (esc)
+			{
+				switch (c)
+				{
+				case 'n': out.push_back('\n'); break;
+				case 'r': out.push_back('\r'); break;
+				case 't': out.push_back('\t'); break;
+				case '\\': out.push_back('\\'); break;
+				case '"': out.push_back('"'); break;
+				case '/': out.push_back('/'); break;
+				default: out.push_back(c); break;
+				}
+				esc = false;
+				continue;
+			}
+			if (c == '\\')
+			{
+				esc = true;
+				continue;
+			}
+			if (c == '"')
+			{
+				outText = out;
+				return true;
+			}
+			out.push_back(c);
+		}
+		return false;
+	}
+
+	static std::wstring Utf8ToWString(const std::string& s)
+	{
+		if (s.empty()) return std::wstring();
+		const int n = ::MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), nullptr, 0);
+		if (n <= 0) return std::wstring();
+		std::wstring out;
+		out.resize((size_t)n);
+		::MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), &out[0], n);
+		return out;
+	}
+
+	static std::wstring TruncateW(const std::wstring& s, size_t maxLen)
+	{
+		if (s.size() <= maxLen) return s;
+		return s.substr(0, maxLen) + L"...";
+	}
+
+	static std::string Base64Encode(const unsigned char* data, size_t len)
+	{
+		static const char* kTable = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+		std::string out;
+		out.reserve(((len + 2) / 3) * 4);
+		size_t i = 0;
+		while (i + 2 < len)
+		{
+			const unsigned v = (unsigned)data[i] << 16 | (unsigned)data[i + 1] << 8 | (unsigned)data[i + 2];
+			out.push_back(kTable[(v >> 18) & 0x3F]);
+			out.push_back(kTable[(v >> 12) & 0x3F]);
+			out.push_back(kTable[(v >> 6) & 0x3F]);
+			out.push_back(kTable[v & 0x3F]);
+			i += 3;
+		}
+		if (i < len)
+		{
+			unsigned v = (unsigned)data[i] << 16;
+			if (i + 1 < len) v |= (unsigned)data[i + 1] << 8;
+			out.push_back(kTable[(v >> 18) & 0x3F]);
+			out.push_back(kTable[(v >> 12) & 0x3F]);
+			if (i + 1 < len) out.push_back(kTable[(v >> 6) & 0x3F]);
+			else out.push_back('=');
+			out.push_back('=');
+		}
+		return out;
+	}
+
+// WinHTTP 代理字符串规范化：
+// 1) 支持输入 "http://127.0.0.1:7890" / "https://127.0.0.1:7890"
+// 2) 支持输入 "127.0.0.1:7890"
+// 3) 若已经是 WinHTTP 格式（含 "http=" 或 "https="）则原样返回
+static std::wstring NormalizeWinHttpProxy(const std::wstring& proxy)
+{
+	std::wstring s = TrimW(proxy);
+	if (s.empty()) return s;
+	if (s.find(L"http=") != std::wstring::npos || s.find(L"https=") != std::wstring::npos)
+	{
+		return s;
+	}
+	const std::wstring httpPrefix = L"http://";
+	const std::wstring httpsPrefix = L"https://";
+	if (s.rfind(httpPrefix, 0) == 0)
+	{
+		s = s.substr(httpPrefix.size());
+	}
+	else if (s.rfind(httpsPrefix, 0) == 0)
+	{
+		s = s.substr(httpsPrefix.size());
+	}
+	// WinHTTP 建议格式："http=host:port;https=host:port"
+	return L"http=" + s + L";https=" + s;
+}
+
+	static bool HttpPostJson(const std::wstring& host, const std::wstring& pathWithQuery,
+	                         const std::string& body, std::string& outResponse, std::wstring& outErr,
+	                         const std::wstring& proxy = L"")
+	{
+		outResponse.clear();
+		outErr.clear();
+
+	const std::wstring proxyNorm = NormalizeWinHttpProxy(proxy);
+	DWORD accessType = WINHTTP_ACCESS_TYPE_DEFAULT_PROXY;
+	const wchar_t* proxyName = WINHTTP_NO_PROXY_NAME;
+	if (!proxyNorm.empty())
+		{
+			accessType = WINHTTP_ACCESS_TYPE_NAMED_PROXY;
+		proxyName = proxyNorm.c_str();
+		}
+
+		HINTERNET hSession = WinHttpOpen(L"SmartArm/1.0",
+		                                accessType,
+		                                proxyName, WINHTTP_NO_PROXY_BYPASS, 0);
+		if (!hSession)
+		{
+			outErr = L"WinHttpOpen failed, err=" + std::to_wstring(::GetLastError());
+			return false;
+		}
+		WinHttpSetTimeouts(hSession, 10000, 10000, 30000, 30000);
+
+		HINTERNET hConnect = WinHttpConnect(hSession, host.c_str(), INTERNET_DEFAULT_HTTPS_PORT, 0);
+		if (!hConnect)
+		{
+			DWORD err = ::GetLastError();
+			WinHttpCloseHandle(hSession);
+			outErr = L"WinHttpConnect failed, err=" + std::to_wstring(err);
+			return false;
+		}
+
+		HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"POST", pathWithQuery.c_str(),
+		                                        nullptr, WINHTTP_NO_REFERER,
+		                                        WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+		if (!hRequest)
+		{
+			DWORD err = ::GetLastError();
+			WinHttpCloseHandle(hConnect);
+			WinHttpCloseHandle(hSession);
+			outErr = L"WinHttpOpenRequest failed, err=" + std::to_wstring(err);
+			return false;
+		}
+
+		const wchar_t* hdr = L"Content-Type: application/json\r\n";
+		WinHttpAddRequestHeaders(hRequest, hdr, -1L, WINHTTP_ADDREQ_FLAG_ADD);
+
+		BOOL ok = WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+		                             (LPVOID)body.data(), (DWORD)body.size(), (DWORD)body.size(), 0);
+		if (!ok)
+		{
+			DWORD err = ::GetLastError();
+			WinHttpCloseHandle(hRequest);
+			WinHttpCloseHandle(hConnect);
+			WinHttpCloseHandle(hSession);
+			outErr = L"WinHTTP SendRequest failed, err=" + std::to_wstring(err);
+			return false;
+		}
+		if (!WinHttpReceiveResponse(hRequest, nullptr))
+		{
+			DWORD err = ::GetLastError();
+			WinHttpCloseHandle(hRequest);
+			WinHttpCloseHandle(hConnect);
+			WinHttpCloseHandle(hSession);
+			outErr = L"WinHTTP ReceiveResponse failed, err=" + std::to_wstring(err);
+			return false;
+		}
+
+		// Check HTTP status code
+		DWORD statusCode = 0;
+		DWORD dwSize = sizeof(statusCode);
+		WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+		                    WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &dwSize, WINHTTP_NO_HEADER_INDEX);
+
+		std::string resp;
+		DWORD avail = 0;
+		while (WinHttpQueryDataAvailable(hRequest, &avail) && avail > 0)
+		{
+			std::string buf;
+			buf.resize(avail);
+			DWORD read = 0;
+			if (!WinHttpReadData(hRequest, &buf[0], avail, &read) || read == 0)
+			{
+				break;
+			}
+			resp.append(buf.data(), buf.data() + read);
+		}
+
+		WinHttpCloseHandle(hRequest);
+		WinHttpCloseHandle(hConnect);
+		WinHttpCloseHandle(hSession);
+
+		if (statusCode != 200)
+		{
+			outErr = L"HTTP " + std::to_wstring(statusCode);
+			if (!resp.empty())
+			{
+				std::string sub = resp.size() > 200 ? resp.substr(0, 200) + "..." : resp;
+				std::wstring wsub(sub.begin(), sub.end()); 
+				outErr += L" Body: " + wsub;
+			}
+			outResponse = resp; 
+			return false;
+		}
+
+		outResponse = resp;
+		return true;
+	}
+
+	static bool ParseGeminiBox(const std::string& resp, int imgW, int imgH,
+	                           VisionOverlayService::RectI& outBox, double& outScore)
+	{
+		outBox = VisionOverlayService::RectI{};
+		outScore = 0.0;
+
+		auto findToken = [&](const char* token) -> size_t
+		{
+			size_t p = resp.find(token);
+			return p;
+		};
+
+		size_t pos = findToken("box_2d");
+		if (pos == std::string::npos) pos = findToken("\"box\"");
+		if (pos == std::string::npos) pos = findToken("box");
+		if (pos == std::string::npos) return false;
+
+		std::vector<double> nums;
+		nums.reserve(4);
+		const char* s = resp.c_str();
+		const char* end = s + resp.size();
+		for (const char* p = s + pos; p < end && nums.size() < 4; )
+		{
+			if (std::isdigit((unsigned char)*p) || *p == '-' || *p == '.')
+			{
+				char* pEnd = nullptr;
+				const double v = std::strtod(p, &pEnd);
+				if (pEnd != p)
+				{
+					nums.push_back(v);
+					p = pEnd;
+					continue;
+				}
+			}
+			p++;
+		}
+		if (nums.size() < 4) return false;
+
+		// Optional score
+		{
+			size_t sp = resp.find("score", pos);
+			if (sp != std::string::npos)
+			{
+				for (const char* p = s + sp; p < end; )
+				{
+					if (std::isdigit((unsigned char)*p) || *p == '-' || *p == '.')
+					{
+						char* pEnd = nullptr;
+						const double v = std::strtod(p, &pEnd);
+						if (pEnd != p) { outScore = v; break; }
+					}
+					p++;
+				}
+			}
+		}
+
+		double ymin = nums[0], xmin = nums[1], ymax = nums[2], xmax = nums[3];
+		const double maxv = std::max(std::max(ymin, xmin), std::max(ymax, xmax));
+
+		double x1 = 0, y1 = 0, x2 = 0, y2 = 0;
+		if (maxv <= 1.5)
+		{
+			x1 = xmin * imgW; x2 = xmax * imgW;
+			y1 = ymin * imgH; y2 = ymax * imgH;
+		}
+		else if (maxv <= 1000.0)
+		{
+			x1 = xmin / 1000.0 * imgW; x2 = xmax / 1000.0 * imgW;
+			y1 = ymin / 1000.0 * imgH; y2 = ymax / 1000.0 * imgH;
+		}
+		else
+		{
+			x1 = xmin; x2 = xmax;
+			y1 = ymin; y2 = ymax;
+		}
+
+		const int ix1 = std::max(0, std::min(imgW - 1, (int)std::floor(x1)));
+		const int iy1 = std::max(0, std::min(imgH - 1, (int)std::floor(y1)));
+		const int ix2 = std::max(0, std::min(imgW, (int)std::ceil(x2)));
+		const int iy2 = std::max(0, std::min(imgH, (int)std::ceil(y2)));
+
+		const int w = std::max(0, ix2 - ix1);
+		const int h = std::max(0, iy2 - iy1);
+		if (w <= 0 || h <= 0) return false;
+
+		outBox.x = ix1;
+		outBox.y = iy1;
+		outBox.w = w;
+		outBox.h = h;
+		return true;
+	}
+
+	static bool ParseGeminiTimeToFetch(const std::string& resp, int& outVal)
+	{
+		outVal = -1;
+		const char* tokens[] = { "TimeToFetch", "time_to_fetch", "timeToFetch" };
+		size_t pos = std::string::npos;
+		for (const char* t : tokens)
+		{
+			pos = resp.find(t);
+			if (pos != std::string::npos) break;
+		}
+		if (pos == std::string::npos) return false;
+		const char* s = resp.c_str();
+		const char* end = s + resp.size();
+		for (const char* p = s + pos; p < end; ++p)
+		{
+			if (*p == '0' || *p == '1')
+			{
+				outVal = (*p == '1') ? 1 : 0;
+				return true;
+			}
+		}
+		return false;
 	}
 }
 
@@ -101,6 +503,11 @@ void VisionService::SetParams(const Params& p)
 	m_params.pointPickHoldCancelMs = std::max(100, m_params.pointPickHoldCancelMs);
 	m_params.pointPickCancelFlashMs = std::max(0, m_params.pointPickCancelFlashMs);
 	m_params.pointPickIouSame = Clamp(m_params.pointPickIouSame, 0.0, 1.0);
+
+	m_params.geminiApiKey = TrimW(m_params.geminiApiKey);
+	m_params.geminiProxy = TrimW(m_params.geminiProxy);
+	if (m_params.geminiModel.empty()) m_params.geminiModel = L"gemini-3-flash-preview";
+	m_params.geminiRequestIntervalMs = std::max(500, std::min(60000, m_params.geminiRequestIntervalMs));
 }
 
 VisionService::Params VisionService::GetParams() const
@@ -115,11 +522,6 @@ void VisionService::SetPreview(CPreview* preview)
 	m_preview = preview;
 }
 
-void VisionService::SetVisualServo(VisualServoController* vs)
-{
-	std::lock_guard<std::mutex> lk(m_mu);
-	m_vs = vs;
-}
 
 void VisionService::SetEnabled(bool on)
 {
@@ -197,21 +599,33 @@ void VisionService::ThreadMain()
 		ULONGLONG cancelUntilMs = 0;
 		VisionOverlayService::RectI lastCand{};
 		bool hasLastCand = false;
+		// 连续锁定计数：用于“3 次锁定事件后才启动指尖方向识别”
+		int lockCount = 0;
+		ULONGLONG lockHoldSinceMs = 0;
+		bool pointReady = false;
 	};
 	PickFsm pick{};
 	ULONGLONG lastPickDetTickMs = 0;
 	int lastPickResetSeq = 0;
 
+	// Gemini cache (thread-local)
+	VisionOverlayService::RectI geminiBox{};
+	bool geminiHasTarget = false;
+	double geminiConf = 0.0;
+	ULONGLONG lastGeminiReqTickMs = 0;
+	std::wstring lastGeminiNote;
+	int lastGeminiResetSeq = 0;
+	bool geminiHasTimeToFetch = false;
+	int geminiTimeToFetch = -1;
+
 	while (m_running.load())
 	{
 		Params p;
 		CPreview* preview = nullptr;
-		VisualServoController* vs = nullptr;
 		{
 			std::lock_guard<std::mutex> lk(m_mu);
 			p = m_params;
 			preview = m_preview;
-			vs = m_vs;
 		}
 
 		// 运行期重置：用于“锁定抓取物 -> 再锁定终点红点”等多段流程
@@ -221,8 +635,19 @@ void VisionService::ThreadMain()
 			pick = PickFsm{};
 			lastPickDetTickMs = 0;
 		}
+	if (p.geminiResetSeq != lastGeminiResetSeq)
+	{
+		lastGeminiResetSeq = p.geminiResetSeq;
+		geminiBox = VisionOverlayService::RectI{};
+		geminiHasTarget = false;
+		geminiConf = 0.0;
+		lastGeminiReqTickMs = 0;
+		lastGeminiNote = L"Gemini: reset";
+		geminiHasTimeToFetch = false;
+		geminiTimeToFetch = -1;
+	}
 
-		if (!m_enabled.load() || preview == nullptr || vs == nullptr)
+		if (!m_enabled.load() || preview == nullptr)
 		{
 			::Sleep(30);
 			continue;
@@ -677,6 +1102,174 @@ void VisionService::ThreadMain()
 		}
 #endif
 
+		// ======================
+		// 3.5) Gemini (cloud object detection)
+		// ======================
+#if defined(SMARTARM_HAS_OPENCV) && SMARTARM_HAS_OPENCV
+		if (!hasTarget && mode == Mode::Gemini)
+		{
+			const ULONGLONG nowG = ::GetTickCount64();
+			const int minInterval = std::max(500, p.geminiRequestIntervalMs);
+			const ULONGLONG sinceLast = (nowG >= lastGeminiReqTickMs) ? (nowG - lastGeminiReqTickMs) : 0;
+			const bool canRequest = (sinceLast >= (ULONGLONG)minInterval);
+
+			if (canRequest)
+			{
+				lastGeminiReqTickMs = nowG;
+				geminiHasTarget = false;
+				geminiConf = 0.0;
+				lastGeminiNote.clear();
+				geminiHasTimeToFetch = false;
+				geminiTimeToFetch = -1;
+
+				if (!p.geminiApiKey.empty())
+				{
+					try
+					{
+						cv::Mat bgra((int)h, (int)w, CV_8UC4, rgb.data(), (size_t)w * 4);
+						cv::Mat bgr;
+						cv::cvtColor(bgra, bgr, cv::COLOR_BGRA2BGR);
+
+						// Light downscale to reduce payload size
+						const int maxSide = std::max(bgr.cols, bgr.rows);
+						cv::Mat bgrSend = bgr;
+						if (maxSide > 640)
+						{
+							const double scale = 640.0 / (double)maxSide;
+							const int nw = std::max(1, (int)std::lround(bgr.cols * scale));
+							const int nh = std::max(1, (int)std::lround(bgr.rows * scale));
+							cv::resize(bgr, bgrSend, cv::Size(nw, nh), 0, 0, cv::INTER_AREA);
+						}
+
+						std::vector<uchar> jpg;
+						std::vector<int> params = { cv::IMWRITE_JPEG_QUALITY, 85 };
+						if (cv::imencode(".jpg", bgrSend, jpg, params) && !jpg.empty())
+						{
+							const std::string b64 = Base64Encode(jpg.data(), jpg.size());
+							std::string prompt = "Detect prominent objects in the image.";
+							std::string schema =
+								"{\"type\":\"object\",\"properties\":{"
+								"\"objects\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{"
+								"\"label\":{\"type\":\"string\"},"
+								"\"score\":{\"type\":\"number\"},"
+								"\"box\":{\"type\":\"array\",\"items\":{\"type\":\"number\"},\"minItems\":4,\"maxItems\":4}"
+								"},\"required\":[\"box\"]}}"
+								"},\"required\":[\"objects\"]}";
+							if (p.geminiEnableTimeToFetch)
+							{
+								prompt =
+									"Detect prominent objects in the image, and decide if the gripper is close enough to fetch now. "
+									"Return TimeToFetch=1 when it is safe to grasp, else 0.";
+								schema =
+									"{\"type\":\"object\",\"properties\":{"
+									"\"TimeToFetch\":{\"type\":\"integer\"},"
+									"\"objects\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{"
+									"\"label\":{\"type\":\"string\"},"
+									"\"score\":{\"type\":\"number\"},"
+									"\"box\":{\"type\":\"array\",\"items\":{\"type\":\"number\"},\"minItems\":4,\"maxItems\":4}"
+									"},\"required\":[\"box\"]}}"
+									"},\"required\":[\"TimeToFetch\",\"objects\"]}";
+							}
+
+							const std::string body =
+								std::string("{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"") +
+								prompt + "\"},{\"inline_data\":{\"mime_type\":\"image/jpeg\",\"data\":\"" +
+								b64 + "\"}}]}],\"generationConfig\":{\"response_mime_type\":\"application/json\","
+								"\"response_json_schema\":" + schema + ",\"temperature\":1.0}}";
+
+							std::wstring path = L"/v1beta/models/" + p.geminiModel +
+								L":generateContent?key=" + p.geminiApiKey;
+							lastGeminiNote = L"Gemini: POST /v1beta/models/" + p.geminiModel;
+
+							std::string resp;
+							std::wstring err;
+							// Pass proxy if configured (read from profile, but we need to add it to Params first.
+							// For now, let's just use the updated function signature.
+							if (HttpPostJson(L"generativelanguage.googleapis.com", path, body, resp, err, p.geminiProxy))
+							{
+								VisionOverlayService::RectI box{};
+								double score = 0.0;
+								std::string textPayload;
+								bool parsed = false;
+								if (ExtractFirstTextFromResponse(resp, textPayload))
+								{
+									const std::string cleaned = StripMarkdownFence(textPayload);
+									parsed = ParseGeminiBox(cleaned, (int)w, (int)h, box, score);
+								}
+								if (!parsed)
+								{
+									parsed = ParseGeminiBox(resp, (int)w, (int)h, box, score);
+								}
+								int ttf = -1;
+								bool hasTtf = false;
+								if (ExtractFirstTextFromResponse(resp, textPayload))
+								{
+									const std::string cleaned = StripMarkdownFence(textPayload);
+									if (ParseGeminiTimeToFetch(cleaned, ttf)) hasTtf = true;
+								}
+								if (!hasTtf)
+								{
+									if (ParseGeminiTimeToFetch(resp, ttf)) hasTtf = true;
+								}
+								if (parsed)
+								{
+									geminiHasTarget = true;
+									geminiBox = box;
+									geminiConf = Clamp(score, 0.0, 1.0);
+									lastGeminiNote = L"Gemini: OK (parsed)";
+								}
+								else
+								{
+									lastGeminiNote = L"Gemini: response parsed failed, len=" + std::to_wstring(resp.size());
+									const std::wstring wresp = TruncateW(Utf8ToWString(resp), 160);
+									if (!wresp.empty()) lastGeminiNote += L" " + wresp;
+								}
+								if (hasTtf)
+								{
+									geminiHasTimeToFetch = true;
+									geminiTimeToFetch = ttf;
+								}
+							}
+							else
+							{
+								lastGeminiNote = L"Gemini: HTTP failed " + err;
+							}
+						}
+						else
+						{
+							lastGeminiNote = L"Gemini: JPEG encode failed";
+						}
+					}
+					catch (...)
+					{
+						geminiHasTarget = false;
+						lastGeminiNote = L"Gemini: exception during request";
+					}
+				}
+				else
+				{
+					lastGeminiNote = L"Gemini: missing API key";
+				}
+			}
+			else
+			{
+				const ULONGLONG waitMs = (sinceLast < (ULONGLONG)minInterval) ? ((ULONGLONG)minInterval - sinceLast) : 0;
+				lastGeminiNote = L"Gemini: waiting " + std::to_wstring((unsigned long long)waitMs) + L"ms";
+			}
+
+			if (geminiHasTarget)
+			{
+				u = (double)geminiBox.x + (double)geminiBox.w * 0.5;
+				v = (double)geminiBox.y + (double)geminiBox.h * 0.5;
+				conf = Clamp(geminiConf, 0.0, 1.0);
+				hasTarget = true;
+				hasTrackBox = true;
+				trackBox = clampTrackBox(geminiBox.x, geminiBox.y, geminiBox.w, geminiBox.h);
+			}
+
+		}
+#endif
+
 		// =================
 		// 3) BrightestPoint
 		// =================
@@ -979,12 +1572,38 @@ void VisionService::ThreadMain()
 									pick.hasLastCand = false;
 									pick.stableSinceMs = 0;
 								}
+								// Point 中断：清空锁定计数
+								pick.lockCount = 0;
+								pick.lockHoldSinceMs = 0;
+								pick.pointReady = false;
+							}
+							else
+							{
+								// 连续锁定事件计数：达到 3 次才启用指尖方向识别
+								if (pick.lockHoldSinceMs == 0) pick.lockHoldSinceMs = nowPick;
+								const int lockMs = std::max(100, p.pointPickHoldLockMs);
+								const ULONGLONG elapsed = (nowPick >= pick.lockHoldSinceMs) ? (nowPick - pick.lockHoldSinceMs) : 0;
+								if (elapsed >= (ULONGLONG)lockMs)
+								{
+									pick.lockCount++;
+									if (pick.lockCount > 3) pick.lockCount = 3;
+									pick.lockHoldSinceMs = nowPick;
+								}
+								pick.pointReady = (pick.lockCount >= 3);
 							}
 
 							// When pointing, try to find a target near finger direction
 							if (p.pointPickEnabled && isPointing)
 							{
-								// Throttle detector calls (10Hz)
+								// 只要是 Point 手势，state 就至少是 1（搜索中），不需要等待节流
+								// 这样确保画面显示 Point 时，pickState 立即变为 1
+								if (pick.state == 0 || pick.state == 4)
+								{
+									pick.state = 1; // searching (pointing but not locked)
+									pick.stableSinceMs = nowPick;
+								}
+
+								// Throttle PointPick calls (10Hz)
 								if (nowPick - lastPickDetTickMs >= 100)
 								{
 									lastPickDetTickMs = nowPick;
@@ -1006,20 +1625,6 @@ void VisionService::ThreadMain()
 										{
 											ex.left = x1; ex.top = y1; ex.right = x2; ex.bottom = y2;
 											hasEx = true;
-										}
-									}
-
-									// Ensure detector loaded occasionally
-									bool detLoaded = false;
-									{
-										std::lock_guard<std::mutex> lk(m_detMu);
-										detLoaded = m_detector.IsLoaded();
-										if (!detLoaded && (nowPick - m_lastDetLoadAttemptMs > 1000))
-										{
-											m_lastDetLoadAttemptMs = nowPick;
-											std::wstring err;
-											(void)m_detector.EnsureLoaded(err);
-											detLoaded = m_detector.IsLoaded();
 										}
 									}
 
@@ -1045,69 +1650,175 @@ void VisionService::ThreadMain()
 									VisionOverlayService::RectI cand{};
 									double bestScore = -1e18;
 
-									// Target = Detector object candidate
+									// Target = Gemini 云端识别候选（指尖方向）
 									if (p.pointPickTarget == 0)
 									{
-										// Preferred: Detector candidates (required)
-										if (detLoaded)
+										// 只有“连续三次锁定时间”且仍为 Point，才开始发起 Gemini 识别
+										if (pick.pointReady)
 										{
-											std::vector<VisionDetector::Detection> dets;
+											const ULONGLONG nowG = nowPick;
+											const int minInterval = std::max(500, p.geminiRequestIntervalMs);
+											const ULONGLONG sinceLast = (nowG >= lastGeminiReqTickMs) ? (nowG - lastGeminiReqTickMs) : 0;
+											const bool canRequest = (sinceLast >= (ULONGLONG)minInterval);
+
+											if (canRequest)
 											{
-												std::lock_guard<std::mutex> lk(m_detMu);
-												(void)m_detector.DetectAll(bgr2.data, (int)bgr2.cols, (int)bgr2.rows, (int)bgr2.step, dets);
+												lastGeminiReqTickMs = nowG;
+												geminiHasTarget = false;
+												geminiConf = 0.0;
+												lastGeminiNote.clear();
+
+												if (!p.geminiApiKey.empty())
+												{
+													try
+													{
+														// 轻量缩放，减少请求体积
+														const int maxSide = std::max(bgr2.cols, bgr2.rows);
+														cv::Mat bgrSend = bgr2;
+														if (maxSide > 640)
+														{
+															const double scale = 640.0 / (double)maxSide;
+															const int nw = std::max(1, (int)std::lround(bgr2.cols * scale));
+															const int nh = std::max(1, (int)std::lround(bgr2.rows * scale));
+															cv::resize(bgr2, bgrSend, cv::Size(nw, nh), 0, 0, cv::INTER_AREA);
+														}
+
+														std::vector<uchar> jpg;
+														std::vector<int> params = { cv::IMWRITE_JPEG_QUALITY, 85 };
+														if (cv::imencode(".jpg", bgrSend, jpg, params) && !jpg.empty())
+														{
+															const std::string b64 = Base64Encode(jpg.data(), jpg.size());
+															const std::string prompt =
+																"识别指尖指向附近的物体坐标，并返回最相关物体的 box 坐标。"
+																"Detect the object near the fingertip direction and return its box coordinates.";
+
+															const std::string schema =
+																"{\"type\":\"object\",\"properties\":{"
+																"\"objects\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"properties\":{"
+																"\"label\":{\"type\":\"string\"},"
+																"\"score\":{\"type\":\"number\"},"
+																"\"box\":{\"type\":\"array\",\"items\":{\"type\":\"number\"},\"minItems\":4,\"maxItems\":4}"
+																"},\"required\":[\"box\"]}}"
+																"},\"required\":[\"objects\"]}";
+
+															const std::string body =
+																std::string("{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"") +
+																prompt + "\"},{\"inline_data\":{\"mime_type\":\"image/jpeg\",\"data\":\"" +
+																b64 + "\"}}]}],\"generationConfig\":{\"response_mime_type\":\"application/json\","
+																"\"response_json_schema\":" + schema + ",\"temperature\":1.0}}";
+
+															std::wstring path = L"/v1beta/models/" + p.geminiModel +
+																L":generateContent?key=" + p.geminiApiKey;
+															lastGeminiNote = L"Gemini(PointPick): POST /v1beta/models/" + p.geminiModel;
+
+															std::string resp;
+															std::wstring err;
+															if (HttpPostJson(L"generativelanguage.googleapis.com", path, body, resp, err, p.geminiProxy))
+															{
+																VisionOverlayService::RectI box{};
+																double score = 0.0;
+																std::string textPayload;
+																bool parsed = false;
+																if (ExtractFirstTextFromResponse(resp, textPayload))
+																{
+																	const std::string cleaned = StripMarkdownFence(textPayload);
+																	parsed = ParseGeminiBox(cleaned, (int)w, (int)h, box, score);
+																}
+																if (!parsed)
+																{
+																	parsed = ParseGeminiBox(resp, (int)w, (int)h, box, score);
+																}
+																if (parsed)
+																{
+																	geminiHasTarget = true;
+																	geminiBox = box;
+																	geminiConf = Clamp(score, 0.0, 1.0);
+																	lastGeminiNote = L"Gemini(PointPick): OK (parsed)";
+																}
+																else
+																{
+																	lastGeminiNote = L"Gemini(PointPick): response parsed failed, len=" + std::to_wstring(resp.size());
+																}
+															}
+															else
+															{
+																lastGeminiNote = L"Gemini(PointPick): HTTP failed " + err;
+															}
+														}
+														else
+														{
+															lastGeminiNote = L"Gemini(PointPick): JPEG encode failed";
+														}
+													}
+													catch (...)
+													{
+														geminiHasTarget = false;
+														lastGeminiNote = L"Gemini(PointPick): exception during request";
+													}
+												}
+												else
+												{
+													lastGeminiNote = L"Gemini(PointPick): missing API key";
+												}
 											}
 
-											for (const auto& d : dets)
+											if (geminiHasTarget)
 											{
-												VisionOverlayService::RectI r = clampTrackBox(d.x, d.y, d.w, d.h);
-												if (r.w <= 0 || r.h <= 0) continue;
-
-												// exclude hand overlap
-												if (hasEx && p.excludeHand)
+												VisionOverlayService::RectI r = clampTrackBox(geminiBox.x, geminiBox.y, geminiBox.w, geminiBox.h);
+												if (r.w > 0 && r.h > 0)
 												{
-													const int rx2 = r.x + r.w;
-													const int ry2 = r.y + r.h;
-													const int ix1 = std::max(r.x, (int)ex.left);
-													const int iy1 = std::max(r.y, (int)ex.top);
-													const int ix2 = std::min(rx2, (int)ex.right);
-													const int iy2 = std::min(ry2, (int)ex.bottom);
-													const int iw2 = std::max(0, ix2 - ix1);
-													const int ih2 = std::max(0, iy2 - iy1);
-													const double inter = (double)iw2 * (double)ih2;
-													const double area = (double)r.w * (double)r.h;
-													const double overlap = (area > 1e-6) ? (inter / area) : 0.0;
-													if (overlap > p.excludeHandMaxOverlap) continue;
-												}
+													bool accept = true;
 
-												const double cx = (double)r.x + (double)r.w * 0.5;
-												const double cy2 = (double)r.y + (double)r.h * 0.5;
-												const double dx = cx - sx;
-												const double dy = cy2 - sy;
-												const double t = dx * dirx + dy * diry;
-												const double perp = std::fabs(dx * diry - dy * dirx);
-												const double rad = std::sqrt(dx * dx + dy * dy);
+													// exclude hand overlap
+													if (hasEx && p.excludeHand)
+													{
+														const int rx2 = r.x + r.w;
+														const int ry2 = r.y + r.h;
+														const int ix1 = std::max(r.x, (int)ex.left);
+														const int iy1 = std::max(r.y, (int)ex.top);
+														const int ix2 = std::min(rx2, (int)ex.right);
+														const int iy2 = std::min(ry2, (int)ex.bottom);
+														const int iw2 = std::max(0, ix2 - ix1);
+														const int ih2 = std::max(0, iy2 - iy1);
+														const double inter = (double)iw2 * (double)ih2;
+														const double area = (double)r.w * (double)r.h;
+														const double overlap = (area > 1e-6) ? (inter / area) : 0.0;
+														if (overlap > p.excludeHandMaxOverlap) accept = false;
+													}
 
-												const bool okRay = (t >= 0.0 && t <= (double)maxLen && perp <= (double)maxPerp);
-												const bool okRad = (rad <= (double)maxRad);
-												if (!okRay && !okRad) continue;
+													if (accept)
+													{
+														const double cx = (double)r.x + (double)r.w * 0.5;
+														const double cy2 = (double)r.y + (double)r.h * 0.5;
+														const double dx = cx - sx;
+														const double dy = cy2 - sy;
+														const double t = dx * dirx + dy * diry;
+														const double perp = std::fabs(dx * diry - dy * dirx);
+														const double rad = std::sqrt(dx * dx + dy * dy);
 
-												// score: prefer high confidence, then small perp, then small distance
-												const double cconf = Clamp((double)d.confidence, 0.0, 1.0);
-												const double s1 = cconf;
-												const double s2 = -perp / (double)std::max(1, maxPerp);
-												const double s3 = -(okRay ? (t / (double)std::max(1, maxLen)) : (rad / (double)std::max(1, maxRad)));
-												const double score = s1 * 1.0 + s2 * 0.35 + s3 * 0.25;
-												if (score > bestScore)
-												{
-													bestScore = score;
-													cand = r;
-													hasCand = true;
+														const bool okRay = (t >= 0.0 && t <= (double)maxLen && perp <= (double)maxPerp);
+														const bool okRad = (rad <= (double)maxRad);
+														if (okRay || okRad)
+														{
+															// score: prefer high confidence, then small perp, then small distance
+															const double cconf = Clamp(geminiConf, 0.0, 1.0);
+															const double s1 = cconf;
+															const double s2 = -perp / (double)std::max(1, maxPerp);
+															const double s3 = -(okRay ? (t / (double)std::max(1, maxLen)) : (rad / (double)std::max(1, maxRad)));
+															const double score = s1 * 1.0 + s2 * 0.35 + s3 * 0.25;
+															if (score > bestScore)
+															{
+																bestScore = score;
+																cand = r;
+																hasCand = true;
+															}
+														}
+													}
 												}
 											}
 										}
 
-										// 用户要求“只允许 Detector 候选”：禁止轮廓兜底
-										// 若 detLoaded==false 或本帧无有效候选，则 hasCand 保持 false。
+										// 使用 Gemini 云端识别；若未就绪或无有效候选，则 hasCand 保持 false。
 									}
 									else
 									{
@@ -1177,9 +1888,9 @@ void VisionService::ThreadMain()
 									if (hasCand)
 									{
 										pick.missingSinceMs = 0;
-										if (pick.state == 0 || pick.state == 4)
+										if (pick.state == 1 && !pick.hasLastCand)
 										{
-											pick.state = 1; // searching
+											// 首次找到候选
 											pick.box = cand;
 											pick.lastCand = cand;
 											pick.hasLastCand = true;
@@ -1277,8 +1988,6 @@ void VisionService::ThreadMain()
 		obs.rayY = rayY;
 		obs.rayZ = rayZ;
 
-		vs->UpdateObservation(obs);
-
 		// Publish last result for HUD (thread-safe)
 		{
 			Result r;
@@ -1317,6 +2026,12 @@ void VisionService::ThreadMain()
 				r.pickBoxW = pick.box.w;
 				r.pickBoxH = pick.box.h;
 			}
+
+			// HandLandmarks gesture (for upper-level pause logic)
+			r.hasHandLandmarks = hasHandLm;
+			r.handGesture = (int)handGesture;
+			r.hasGeminiTimeToFetch = geminiHasTimeToFetch;
+			r.geminiTimeToFetch = geminiTimeToFetch;
 
 			{
 				std::lock_guard<std::mutex> lk(m_resMu);
@@ -1369,6 +2084,10 @@ void VisionService::ThreadMain()
 			if (s.hasSelectBox)
 			{
 				s.selectBox = pick.box;
+			}
+			if (mode == Mode::Gemini && !lastGeminiNote.empty())
+			{
+				s.note = lastGeminiNote;
 			}
 			VisionOverlayService::Instance().Update(s);
 		}

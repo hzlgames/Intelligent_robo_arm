@@ -13,12 +13,11 @@
 #include "preview.h"
 #include "MotionController.h"
 #include "KinematicsConfig.h"
-#include "JogController.h"
-#include "JogPadCtrl.h"
-#include "VisualServoController.h"
+#include "ArmPostureCtrl.h"
 #include "VisionService.h"
 #include "SeeAndFetchStateMachine.h"
 #include "ToolConfig.h"
+#include "GrabTestController.h"
 
 // C智能机械臂Dlg 对话框
 class C智能机械臂Dlg : public CDialogEx
@@ -63,6 +62,7 @@ protected:
 	afx_msg void OnBnClickedVisionProcEnable();
 	afx_msg void OnBnClickedVsNoDrive();
 	afx_msg void OnBnClickedSfEnable();
+	afx_msg void OnBnClickedSfGrabTest();
 	afx_msg void OnBnClickedSfStart();
 	afx_msg void OnBnClickedSfCancel();
 	afx_msg void OnBnClickedSfEStop();
@@ -78,6 +78,8 @@ private:
 	void LoadVisionSettingsFromProfile();
 	void SyncVisionAlgoUiFromState();
 	void LoadSeeAndFetchSettingsFromProfile();
+	void LoadGrabTestSettingsFromProfile();
+	void ApplyGrabTestVisionMode(bool on);
 
 	// ===== 主界面：相机预览 =====
 private:
@@ -157,6 +159,7 @@ private:
 
 	// See&Fetch (auto pick&place)
 	CButton   m_chkSfEnable;
+	CButton   m_chkSfGrabTest;
 	CButton   m_btnSfStart;
 	CButton   m_btnSfCancel;
 	CButton   m_btnSfEStop;
@@ -168,12 +171,12 @@ private:
 	bool      m_sfVisionOverridden = false;
 	VisionService::Mode m_sfPrevVisionMode = VisionService::Mode::Auto;
 
-	CButton   m_grpMainJog;
 	CButton   m_grpMainStatus;
 
-	CJogPadCtrl m_staticMainJogPad;
-	CSliderCtrl m_sliderSpeedMm;
-	CSliderCtrl m_sliderSpeedPitch;
+	// 姿态可视化面板
+	CButton   m_grpMainPosture;
+	CArmPostureCtrl m_ctrlPosture;
+
 	CStatic   m_staticMainPose;
 	CButton   m_btnEmergencyStop;
 
@@ -193,7 +196,6 @@ private:
 	// ===== 主界面：运动与Jog（后续HUD也会读取这些状态）=====
 	MotionController m_motion;
 	KinematicsConfig m_kc;
-	JogController m_jog;
 
 	// 自动归位状态机（连接后先归位，读回到位后才允许 Jog）
 	AutoHomeState m_autoHomeState = AutoHomeState::Idle;
@@ -202,14 +204,17 @@ private:
 	int m_autoHomeAttempt = 0;
 	std::array<int, MotionConfig::kJointCount + 1> m_autoHomeTargetPos{}; // 1..6；未用=-1
 
-	// 视觉伺服：将视觉观测转换为 Jog 输入（未来视觉协同）
-	VisualServoController m_vs;
-
 	// 视觉线程：从预览拉帧并产出 VisualObservation（先提供基础验证管线）
 	VisionService m_vision;
 
 	// See&Fetch state machine (joint-step auto)
 	SeeAndFetchStateMachine m_sf;
+	GrabTestController m_grabTest;
+
+	bool m_grabTestEnabled = false;
+	bool m_grabTestCmdStart = false;
+	bool m_grabTestCmdCancel = false;
+	bool m_grabTestCmdEStop = false;
 
 	// Tool offsets (camera/gripper) used by See&Fetch plane cache; refreshed on settings import
 	ToolConfig m_tool;

@@ -72,6 +72,37 @@ bool MotionController::MoveJointAbs(int jointIndex, int pos, int timeMs)
 	return MoveJointsAbs(v, timeMs);
 }
 
+bool MotionController::MoveServoAbs(int servoId, int pos, int timeMs)
+{
+	std::vector<std::pair<int, int>> v;
+	v.push_back({ servoId, pos });
+	return MoveServosAbs(v, timeMs);
+}
+
+bool MotionController::MoveServosAbs(const std::vector<std::pair<int, int>>& servoToPos, int timeMs)
+{
+	std::vector<ArmProtocol::ServoTarget> servos;
+	servos.reserve(servoToPos.size());
+	for (const auto& sp : servoToPos)
+	{
+		const int id = sp.first;
+		const int rawPos = sp.second;
+		if (id < 1 || id > 6) continue;
+		ArmProtocol::ServoTarget st;
+		st.id = static_cast<uint8_t>(id);
+		st.position = static_cast<uint16_t>(ClampPos(rawPos, 0, 1000));
+		servos.push_back(st);
+	}
+	if (servos.empty())
+	{
+		return false;
+	}
+	if (timeMs < 0) timeMs = 0;
+	if (timeMs > 60000) timeMs = 60000;
+	ArmCommsService::Instance().EnqueueMove(ArmProtocol::PackMove(servos, static_cast<uint16_t>(timeMs)));
+	return true;
+}
+
 bool MotionController::MoveJointsAbs(const std::vector<std::pair<int, int>>& jointToPos, int timeMs)
 {
 	std::vector<ArmProtocol::ServoTarget> servos;
@@ -79,11 +110,13 @@ bool MotionController::MoveJointsAbs(const std::vector<std::pair<int, int>>& joi
 	{
 		return false;
 	}
-	if (timeMs < 0) timeMs = 0;
-	if (timeMs > 60000) timeMs = 60000;
-
-	ArmCommsService::Instance().EnqueueMove(ArmProtocol::PackMove(servos, static_cast<uint16_t>(timeMs)));
-	return true;
+	std::vector<std::pair<int, int>> servoToPos;
+	servoToPos.reserve(servos.size());
+	for (const auto& st : servos)
+	{
+		servoToPos.push_back({ (int)st.id, (int)st.position });
+	}
+	return MoveServosAbs(servoToPos, timeMs);
 }
 
 bool MotionController::MoveHome(int timeMs)
@@ -119,61 +152,4 @@ void MotionController::RequestReadAllAssigned()
 	}
 	ArmCommsService::Instance().EnqueueRead(ArmProtocol::PackReadPosition(ids));
 }
-
-void MotionController::StartScript(std::vector<Keyframe> frames, bool loop)
-{
-	m_frames = std::move(frames);
-	m_loop = loop;
-	m_frameIndex = 0;
-	m_playing = !m_frames.empty();
-	m_nextDue = ::GetTickCount64();
-}
-
-void MotionController::StopScript()
-{
-	m_playing = false;
-	m_frames.clear();
-	m_frameIndex = 0;
-	m_nextDue = 0;
-}
-
-void MotionController::Tick()
-{
-	if (!m_playing) return;
-	if (m_frames.empty())
-	{
-		m_playing = false;
-		return;
-	}
-	const ULONGLONG now = ::GetTickCount64();
-	if (now < m_nextDue) return;
-
-	const Keyframe& kf = m_frames[m_frameIndex];
-	std::vector<std::pair<int, int>> joints;
-	for (int j = 1; j <= MotionConfig::kJointCount; j++)
-	{
-		const int p = kf.jointPos[j];
-		if (p < 0) continue;
-		joints.push_back({ j, p });
-	}
-	(void)MoveJointsAbs(joints, kf.durationMs);
-
-	// schedule next
-	ULONGLONG delta = (kf.durationMs > 0) ? static_cast<ULONGLONG>(kf.durationMs) : 0ULL;
-	m_nextDue = now + delta;
-
-	m_frameIndex++;
-	if (m_frameIndex >= m_frames.size())
-	{
-		if (m_loop)
-		{
-			m_frameIndex = 0;
-		}
-		else
-		{
-			StopScript();
-		}
-	}
-}
-
 

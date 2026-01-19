@@ -5,11 +5,10 @@
 #include "SerialDiagPage.h"
 #include "CameraDiagPage.h"
 
-#include "ControlDiagPage.h"
 #include "MotionDiagPage.h"
 #include "KinematicsDiagPage.h"
-#include "KinTestDiagPage.h"
 #include "SeeAndFetchDiagPage.h"
+#include "AutoHomeDiagPage.h"
 #include "Resource.h"
 
 CDiagnosticsSheet::CDiagnosticsSheet(CWnd* pParentWnd)
@@ -21,19 +20,17 @@ CDiagnosticsSheet::CDiagnosticsSheet(CWnd* pParentWnd)
 
 	m_serial = new CSerialDiagPage();
 	m_camera = new CCameraDiagPage();
-	m_control = new CControlDiagPage();
 	m_motion = new CMotionDiagPage();
 	m_kinematics = new CKinematicsDiagPage();
-	m_kinTest = new CKinTestDiagPage();
 	m_seeFetch = new CSeeAndFetchDiagPage();
+	m_autoHome = new CAutoHomeDiagPage();
 
 	AddPage(m_serial);
 	AddPage(m_camera);
-	AddPage(m_control);
 	AddPage(m_motion);
 	AddPage(m_kinematics);
-	AddPage(m_kinTest);
 	AddPage(m_seeFetch);
+	AddPage(m_autoHome);
 }
 
 CDiagnosticsSheet::~CDiagnosticsSheet()
@@ -41,11 +38,10 @@ CDiagnosticsSheet::~CDiagnosticsSheet()
 	// Pages are owned by this sheet; delete explicitly.
 	delete m_serial;
 	delete m_camera;
-	delete m_control;
 	delete m_motion;
 	delete m_kinematics;
-	delete m_kinTest;
 	delete m_seeFetch;
+	delete m_autoHome;
 }
 
 BOOL CDiagnosticsSheet::OnInitDialog()

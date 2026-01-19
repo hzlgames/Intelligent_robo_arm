@@ -42,7 +42,7 @@ namespace VisionGeometry
 	// 输入：旋转矩阵 R（marker->cam）与平移向量 t（marker 原点在 cam 中坐标）。
 	bool PlaneFromMarkerPose(const double R[9], const double t[3], Plane& outPlane);
 
-	// 默认 Cam->Base 点映射（用于无外参时先跑通链路；与 VisualServoController 的速度映射一致）
+	// 默认 Cam->Base 点映射（用于无外参时先跑通链路）
 	// Base: X右, Y前, Z上
 	inline Point3 MapCamPointToBase_Default(const Point3& pCam)
 	{
