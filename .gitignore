@@ -13,6 +13,9 @@ x86/
 *.VC.db
 *.VC.opendb
 
+# Cursor
+.cursor/
+
 # Build artifacts
 *.obj
 *.pch
@@ -40,3 +43,6 @@ Desktop.ini
 *.tmp
 *.bak
 *.swp
+
+# Large Assests
+models/
