@@ -1,8 +1,8 @@
-# 智能机械臂 (Smart Robotic Arm)
+# 智能机械臂
 
 MFC 6自由度机械臂控制软件，集成运动学、视觉（OpenCV）与模拟仿真。
 
-## 📦 环境配置 (Prerequisites)
+## 📦 环境配置
 
 1.  **Visual Studio 2022**
     *   安装负载：**使用 C++ 的桌面开发 (Desktop development with C++)**
@@ -10,7 +10,7 @@ MFC 6自由度机械臂控制软件，集成运动学、视觉（OpenCV）与模
 
 > **注意**：确保 VS 安装了 MFC 组件，否则项目无法加载。
 
-## 🏗️ 依赖管理 (Dependencies)
+## 🏗️ 依赖管理
 
 本项目使用 **vcpkg manifest** 模式自动管理依赖。`vcpkg.json` 文件定义了所需库：
 *   `eigen3` (运动学计算)
@@ -19,7 +19,7 @@ MFC 6自由度机械臂控制软件，集成运动学、视觉（OpenCV）与模
 
 **你不需要手动下载或配置这些库路径。**
 
-## 🚀 编译与运行 (Build & Run)
+## 🚀 编译与运行
 
 1.  在 Visual Studio 2022 中打开 `智能机械臂.sln`。
 2.  设置解决方案配置为 **Debug** 或 **Release**，平台选择 **x64**。
